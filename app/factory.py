@@ -541,7 +541,20 @@ def _best_set(still, sets):
         if hit > score: best, score = k, hit
     return best
 
-def _build_location_bible(vid, style, beats, pk):
+BIBLE_BUDGET_S = 150      # hard cap on all reference-image work during planning
+
+def _ref_image(prompt, timeout=90):
+    """One attempt, short timeout — a reference image is a nice-to-have, never a
+    reason for planning to hang."""
+    import base64
+    d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
+                  {'contents': [{'parts': [{'text': prompt}]}],
+                   'generationConfig': {'responseModalities': ['IMAGE']}},
+                  timeout=timeout, tries=1)
+    return next(base64.b64decode(x['inlineData']['data'])
+                for x in d['candidates'][0]['content']['parts'] if 'inlineData' in x)
+
+def _build_location_bible(vid, style, beats, pk, deadline=None):
     """Lock the SETS as well as the cast.
 
     Locking characters stopped the people changing, but every shot still invented
@@ -567,7 +580,9 @@ def _build_location_bible(vid, style, beats, pk):
         return {}
 
     locs = {}
-    for c in (out.get('locations') or [])[:4]:
+    for c in (out.get('locations') or [])[:2]:
+        if deadline and time.time() > deadline:
+            print('  set bible: out of time, continuing without the rest', flush=True); break
         nm, desc = (c.get('name') or '').strip(), (c.get('description') or '').strip()
         if not nm or not desc: continue
         key = 'l_' + ''.join(ch for ch in nm.lower() if ch.isalnum())[:16]
@@ -575,11 +590,7 @@ def _build_location_bible(vid, style, beats, pk):
             prompt = (f"{pk.get('look_prompt','')}\n\nWide establishing view of an EMPTY set with no people in "
                       f"it: {desc}. Show the whole space clearly so its layout is unmistakable. "
                       f"No text, letters, numbers, logos or watermarks.")
-            d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
-                          {'contents': [{'parts': [{'text': prompt}]}],
-                           'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
-            img = next(base64.b64decode(x['inlineData']['data'])
-                       for x in d['candidates'][0]['content']['parts'] if 'inlineData' in x)
+            img = _ref_image(prompt)
             ref = RUNS / vid / 'sets'; ref.mkdir(parents=True, exist_ok=True)
             fp = ref / f'{key}.png'; fp.write_bytes(img)
             a = supa.upload_asset(str(fp), 'graphic', title=f'SET {nm} ({style})', tags=['set', style], style=style)
@@ -590,7 +601,7 @@ def _build_location_bible(vid, style, beats, pk):
     return locs
 
 
-def _build_cast_bible(vid, style, beats, pk):
+def _build_cast_bible(vid, style, beats, pk, deadline=None):
     """Lock the story's characters before anything is rendered.
 
     Without this every shot is drawn from scratch and the model invents a new
@@ -618,7 +629,9 @@ def _build_cast_bible(vid, style, beats, pk):
         return {}
 
     custom = {}
-    for c in (bible.get('characters') or [])[:5]:
+    for c in (bible.get('characters') or [])[:3]:
+        if deadline and time.time() > deadline:
+            print('  cast bible: out of time, continuing without the rest', flush=True); break
         nm, desc = (c.get('name') or '').strip(), (c.get('description') or '').strip()
         if not nm or not desc: continue
         key = 'c_' + ''.join(ch for ch in nm.lower() if ch.isalnum())[:16]
@@ -626,11 +639,7 @@ def _build_cast_bible(vid, style, beats, pk):
             prompt = (f"{pk.get('look_prompt','')}\n\nFull body character reference, facing forward, neutral "
                       f"friendly pose, centred on a plain solid white background. Character: {desc}. "
                       f"No text, letters, numbers, logos or watermarks.")
-            d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
-                          {'contents': [{'parts': [{'text': prompt}]}],
-                           'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
-            img = next(base64.b64decode(x['inlineData']['data'])
-                       for x in d['candidates'][0]['content']['parts'] if 'inlineData' in x)
+            img = _ref_image(prompt)
             ref = RUNS / vid / 'cast'; ref.mkdir(parents=True, exist_ok=True)
             fp = ref / f'{key}.png'; fp.write_bytes(img)
             a = supa.upload_asset(str(fp), 'char_ref', title=f'{nm} ({style})', tags=['cast', style], style=style)
@@ -640,6 +649,8 @@ def _build_cast_bible(vid, style, beats, pk):
             print(f'  cast ref failed for {nm}: {str(e)[:100]}', flush=True)
     return custom
 
+
+PLAN_MAX_S = 600   # planning must never hang; fail loudly instead
 
 def plan_video(job):
     """Cheap planning phase (Fable 5 only): storyboard -> planned beats -> plan_review. No generation."""
@@ -673,9 +684,10 @@ def plan_video(job):
     beats = sb['beats']
     pk_plan = style_pack(style)
     style_has_cast = any((c.get('style') or style) == style for c in _db_characters())
-    bible = {} if style_has_cast else _build_cast_bible(vid, style, beats, pk_plan)
+    _deadline = time.time() + BIBLE_BUDGET_S
+    bible = {} if style_has_cast else _build_cast_bible(vid, style, beats, pk_plan, _deadline)
     name_to_key = {v['name'].lower(): k for k, v in bible.items()}
-    sets = _build_location_bible(vid, style, beats, pk_plan) if pk_plan.get('lock_sets') else {}
+    sets = _build_location_bible(vid, style, beats, pk_plan, _deadline) if pk_plan.get('lock_sets') else {}
     set_names = {v['name'].lower(): k for k, v in sets.items()}
     counts = {'scene': 0, 'board': 0, 'stat': 0}
     est_total = 0.0; est_cost = 0.0
