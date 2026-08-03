@@ -118,6 +118,16 @@ def poll_once():
     except Exception as e:
         err = f'{type(e).__name__}: {e}'
         log(f"job {job['id']} FAILED: {err}\n{traceback.format_exc()}")
+        # a run must never be left stranded mid-status: put it back where the
+        # user can act on it (its finished cut if it has one, else review)
+        if job.get('video_id'):
+            try:
+                v = supa.select('videos', id=f"eq.{job['video_id']}")[0]
+                if v.get('status') in ('rendering', 'running'):
+                    supa.update_video(job['video_id'],
+                                      {'status': 'done' if v.get('final_asset') else 'review'})
+            except Exception:
+                pass
         # transient failures are common (model hiccups, network) — requeue a few
         # times with a growing delay before giving up.
         payload = job.get('payload') or {}

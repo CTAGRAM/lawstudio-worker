@@ -631,6 +631,7 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
 def _fetch_asset(asset_id, dest):
     row = supa.select('assets', id=f'eq.{asset_id}')[0]
     url = supa.public_url(row['storage_path'])
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
     import requests
     with requests.get(url, stream=True, timeout=300) as r:
         with open(dest, 'wb') as f:
@@ -645,7 +646,8 @@ def assemble_video(video_id):
     v = supa.select('videos', id=f'eq.{video_id}')[0]
     beats = sorted(supa.select('video_beats', video_id=f'eq.{video_id}'), key=lambda b: b['idx'])
     beats = [b for b in beats if b['status'] == 'done']
-    wd = RUNS / video_id; segs = wd/'segs'; segs.mkdir(parents=True, exist_ok=True)
+    wd = RUNS / video_id; segs = wd/'segs'
+    for d in (segs, wd/'clips', wd/'audio', wd/'stills'): d.mkdir(parents=True, exist_ok=True)
     brand = supa.select('brands', id=f"eq.{v['brand_id']}")[0] if v.get('brand_id') else None
 
     order = []
