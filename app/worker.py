@@ -71,6 +71,17 @@ def _dispatch(job):
         else:
             msg = factory.reroll_beat(job.get('payload') or {})
         supa.update_job(job['id'], {'status': 'done', 'log': msg})
+    elif jtype == 'youtube_publish':
+        from pipeline import youtube
+        supa.update_job(job['id'], {'status': 'running'})
+        try:
+            msg = youtube.publish(job)
+        except Exception:
+            if job.get('video_id'):
+                try: supa.update_video(job['video_id'], {'youtube_status': 'failed'})
+                except Exception: pass
+            raise
+        supa.update_job(job['id'], {'status': 'done', 'log': msg})
     else:
         supa.update_job(job['id'], {'status': 'failed', 'log': f'unknown job type: {jtype}'})
 
