@@ -469,6 +469,9 @@ def plan_video(job):
         except Exception: pass
     supa._rest('DELETE', 'video_beats', params={'video_id': f'eq.{vid}'})
     ts = payload.get('target_seconds')
+    # a series can pin a fixed cast; also allow user-created characters as valid keys
+    series_cast = payload.get('cast_keys') or ((supa.select('videos', id=f'eq.{vid}')[0].get('progress') or {}).get('cast_keys')) or []
+    known_cast = set(CHARACTERS) | {c['key'] for c in _db_characters()}
     learnings = None
     try:
         g = supa.select('growth', order='created_at.desc', limit='1')
@@ -487,7 +490,10 @@ def plan_video(job):
         dur = _est_secs(b['vo']); est_total += dur
         if kind == 'scene': est_cost += 1.2
         meta = {'bg': b.get('bg', ''), 'plan': _beat_plan(kind, brand_name, style)}
-        if b.get('cast'): meta['cast'] = [c for c in b['cast'] if c in CHARACTERS]
+        if b.get('cast'): meta['cast'] = [c for c in b['cast'] if c in known_cast]
+        # a series pins its cast, so every episode uses the same characters
+        if series_cast and kind == 'scene':
+            meta['cast'] = [c for c in (meta.get('cast') or []) if c in series_cast] or list(series_cast)
         if kind in ('board', 'stat'): meta['no_trim'] = True; meta[kind] = b.get(kind) or {}
         supa.insert('video_beats', {
             'video_id': vid, 'idx': i, 'kind': kind, 'vo_text': b['vo'],
