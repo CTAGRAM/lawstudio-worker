@@ -88,6 +88,15 @@ def _styles():
             pass
     return _STYLE_CACHE['rows']
 
+def _speaker_name(beat, style):
+    """Display name of whoever is speaking this beat, if the plan named one."""
+    key = (beat.get('meta') or {}).get('speaker')
+    if not key: return None
+    for c in _db_characters():
+        if c.get('key') == key and (c.get('style') or style) == style:
+            return c.get('name')
+    return CHARACTERS.get(key, {}).get('name')
+
 def _style_refs(style):
     """Fallback visual references for a style: the reference image of every
     character that belongs to it. Nothing is shared across styles."""
@@ -456,12 +465,19 @@ def _stage(vid, stage, **extra):
     except Exception:
         pass
 
-def _motion_brief(style, motion_prompt):
+def _motion_brief(style, motion_prompt, speaker=None):
     """Animation direction for the image-to-video pass — each style says how much
-    life its characters should have."""
+    life its characters should have. When we know who is talking, say so: the
+    speaker's mouth carries the line and everyone else reacts."""
     keep = ("Animate this exact image as a flat 2D animated clip. Keep the art style, characters, "
             "colours and layout exactly as shown. No new elements, no text. ")
-    return keep + (motion_prompt or '') + ' ' + (style_pack(style).get('motion_prompt') or '')
+    talk = ''
+    if speaker:
+        talk = (f" {speaker} is the one speaking this line: their mouth opens and closes in time with "
+                "natural speech rhythm, jaw and lips moving clearly through the whole clip, eyebrows and "
+                "head moving with the words. Every other character stays quiet with a closed mouth and "
+                "listens, reacting with small nods and expressions.")
+    return keep + (motion_prompt or '') + ' ' + (style_pack(style).get('motion_prompt') or '') + talk
 
 def _voice_for(style):
     """TTS voice + delivery for a style."""
@@ -523,6 +539,7 @@ def plan_video(job):
         if kind == 'scene': est_cost += 1.2
         meta = {'bg': b.get('bg', ''), 'plan': _beat_plan(kind, brand_name, style)}
         if b.get('cast'): meta['cast'] = [c for c in b['cast'] if c in known_cast]
+        if b.get('speaker') in known_cast: meta['speaker'] = b['speaker']
         # a series pins its cast, so every episode uses the same characters
         if series_cast and kind == 'scene':
             meta['cast'] = [c for c in (meta.get('cast') or []) if c in series_cast] or list(series_cast)
@@ -613,7 +630,7 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
                       {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
         img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
         still_path.write_bytes(img); cost += 0.14
-        clip = lib.omni_i2v(img, _motion_brief(style, b.get('motion_prompt')))
+        clip = lib.omni_i2v(img, _motion_brief(style, b.get('motion_prompt'), _speaker_name(b, style)))
     else:
         clip = lib.omni_video(_look_for_beat(pk, b) + "\n\nScene: " + (b['scene_prompt'] or '')); img = None
     cost += 1.05
