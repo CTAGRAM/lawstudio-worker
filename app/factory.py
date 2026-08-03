@@ -471,7 +471,8 @@ def _veo_brief(pk, beat, speaker_desc):
     """Veo renders the shot AND performs the line, so the mouth matches the words.
     The prompt therefore carries the spoken line, not just the motion."""
     line = (beat.get('vo_text') or '').strip()
-    who = speaker_desc or 'the character'
+    who = speaker_desc or (beat.get('meta') or {}).get('speaker_name') \
+        or 'the character who is speaking in this shot'
     shot = (beat.get('meta') or {}).get('shot') or 'medium shot'
     return (f"{shot}. {(beat.get('scene_prompt') or '').strip()}\n\n"
             f"{who} speaks this line out loud, clearly and in character, with accurate lip sync: "
@@ -564,6 +565,9 @@ def plan_video(job):
         meta = {'bg': b.get('bg', ''), 'plan': _beat_plan(kind, brand_name, style)}
         if b.get('cast'): meta['cast'] = [c for c in b['cast'] if c in known_cast]
         if b.get('speaker') in known_cast: meta['speaker'] = b['speaker']
+        if b.get('shot'): meta['shot'] = b['shot']
+        # styles without a registered cast still name who talks, as free text
+        if b.get('speaker') and b['speaker'] not in known_cast: meta['speaker_name'] = str(b['speaker'])
         # a series pins its cast, so every episode uses the same characters
         if series_cast and kind == 'scene':
             meta['cast'] = [c for c in (meta.get('cast') or []) if c in series_cast] or list(series_cast)
