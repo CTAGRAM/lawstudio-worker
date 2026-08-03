@@ -845,6 +845,16 @@ def reroll_beat(payload):
     else:
         clip = lib.omni_video(_look_for_beat(pk, b) + "\n\nScene: " + scene); sa = None
     cp = wd/'clips'/f'{i:02d}.mp4'; cp.write_bytes(clip)
+    spk = (b.get('meta') or {}).get('speaker')
+    if pk.get('lip_sync') and spk and b.get('vo_asset'):
+        try:
+            from pipeline import lipsync
+            raw = supa.upload_asset(str(cp), 'clip', title=f'reroll beat{i} pre-sync', tags=['raw', style], style=style)
+            vo = supa.select('assets', id=f"eq.{b['vo_asset']}")[0]
+            cp.write_bytes(lipsync.sync(supa.public_url(raw['storage_path']), supa.public_url(vo['storage_path'])))
+            print(f'  beat {i}: lip synced', flush=True)
+        except Exception as e:
+            print(f'  beat {i}: lip sync skipped ({str(e)[:120]})', flush=True)
     ca = supa.upload_asset(str(cp), 'clip', title=f'reroll beat{i}', tags=['reroll', style], style=style, duration_s=_dur(cp))
     patch = {'status': 'done', 'clip_asset': ca['id']}
     if sa: patch['still_asset'] = sa['id']
