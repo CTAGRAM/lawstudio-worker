@@ -150,9 +150,12 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
              f"Around {n_beats} beats (use fewer/more only if genuinely needed), ~{target_seconds}s spoken.")
     learn = (f"\n\nLEARNINGS FROM PAST PERFORMANCE (apply these to improve reach/engagement):\n{learnings}\n"
              if learnings else "")
-    prompt = (f"You are the director of a UK legal-explainer video studio. Write a storyboard as JSON.\n{src}\n\n"
+    # The director profile must match the vertical — a kids channel briefed as a
+    # "UK legal-explainer studio" turns "wheels on the bus" into bus licence law.
+    profile = DIRECTORS.get(style, DIRECTORS['vyond'])
+    prompt = (f"{profile['who']} Write a storyboard as JSON.\n{src}\n\n"
               f"Style: {style}. {scope} {guide}{learn}\n"
-              'Accurate UK employment/legal content, qualitative framing (no invented statistics). '
+              f"{profile['rules']} "
               'Return JSON: {"title": "...", "beats": [ ... ]}')
     return json.loads(lib.text_gen(prompt))
 
@@ -300,6 +303,41 @@ def _est_secs(vo):
 KIDS_VOICE_STYLE = ("Read in a bright, warm, friendly storyteller voice for young children — playful and "
                     "encouraging, clear and unhurried, with gentle excitement: ")
 
+# Per-style director profile: who is briefing the storyboard and what the content
+# rules are. Keeping these separate stops one vertical bleeding into another.
+DIRECTORS = {
+    'vyond': {
+        'who': 'You are the director of a UK legal-explainer video studio.',
+        'rules': 'Accurate UK employment/legal content, qualitative framing (no invented statistics).',
+    },
+    'vox': {
+        'who': 'You are the director of an editorial explainer studio in the style of Vox.',
+        'rules': 'Accurate, well-sourced framing; no invented statistics.',
+    },
+    'kids': {
+        'who': ("You are the director of a children's educational animation channel for ages 6-10 "
+                "(think nursery rhymes, first science, early maths, languages and simple stories)."),
+        'rules': ("Stay strictly on the child-friendly topic you were given — this is NOT a legal or "
+                  "corporate channel, so never introduce law, licensing, regulations, contracts or adult "
+                  "business framing unless the brief itself asks for it. Simple words, concrete everyday "
+                  "examples, warm and playful, gently repetitive, factually correct for a child. "
+                  "Give characters clear emotions and lots of physical action to animate."),
+    },
+}
+
+def _motion_brief(style, motion_prompt):
+    """Animation direction for the image-to-video pass. Legal explainers want calm,
+    restrained motion; a kids channel needs characters that actually move."""
+    keep = ("Animate this exact image as a flat 2D animated clip. Keep the art style, characters, "
+            "colours and layout exactly as shown. No new elements, no text. ")
+    if style == 'kids':
+        return (keep + (motion_prompt or '') +
+                " Make it lively and full of life: characters move their arms and heads, bounce and "
+                "gesture, blink and change expression, mouths move as they speak, props and background "
+                "details (leaves, clouds, wheels) animate too. Energetic and playful throughout, but "
+                "keep every character on-model.")
+    return keep + (motion_prompt or 'Subtle natural motion.')
+
 def _voice_for(style):
     """TTS kwargs per style: kids gets a warmer, playful delivery."""
     if style == 'kids':
@@ -433,8 +471,7 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
                       {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
         img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
         still_path.write_bytes(img); cost += 0.14
-        clip = lib.omni_i2v(img, "Animate this exact image as a flat 2D explainer video clip. Keep the art style, "
-                            "characters, colors and layout exactly as shown. " + (b.get('motion_prompt') or 'Subtle natural motion.') + " No new elements, no text.")
+        clip = lib.omni_i2v(img, _motion_brief(style, b.get('motion_prompt')))
     else:
         prompt = VOX_STYLE.format(bg=(b.get('meta') or {}).get('bg', 'Flat mustard-yellow paper background')) + "\n\nScene: " + (b['scene_prompt'] or '')
         clip = lib.omni_video(prompt); img = None
