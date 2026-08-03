@@ -638,6 +638,9 @@ def _fetch_asset(asset_id, dest):
     return dest
 
 def assemble_video(video_id):
+    # flip the row to 'rendering' straight away so the dashboard reflects it even
+    # if the click-time update was missed
+    supa.update('videos', video_id, {'status': 'rendering'})
     _stage(video_id, 'assembling', assemble_started_at=_now_iso())
     v = supa.select('videos', id=f'eq.{video_id}')[0]
     beats = sorted(supa.select('video_beats', video_id=f'eq.{video_id}'), key=lambda b: b['idx'])
