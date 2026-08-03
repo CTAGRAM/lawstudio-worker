@@ -314,6 +314,7 @@ def plan_video(job):
         dur = _est_secs(b['vo']); est_total += dur
         if kind == 'scene': est_cost += 1.2
         meta = {'bg': b.get('bg', ''), 'plan': _beat_plan(kind, brand_name, style)}
+        if b.get('cast'): meta['cast'] = [c for c in b['cast'] if c in CHARACTERS]
         if kind in ('board', 'stat'): meta['no_trim'] = True; meta[kind] = b.get(kind) or {}
         supa.insert('video_beats', {
             'video_id': vid, 'idx': i, 'kind': kind, 'vo_text': b['vo'],
