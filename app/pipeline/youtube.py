@@ -143,5 +143,6 @@ def publish(job):
     yt_url = f'https://www.youtube.com/watch?v={yt_id}'
     supa.update_video(video_id, {
         'youtube_video_id': yt_id, 'youtube_url': yt_url, 'youtube_status': 'done',
+        'youtube_channel_row_id': channel_row_id,
     })
     return f'published {video_id} to {channel.get("channel_title")} as {yt_url} ({privacy})'
