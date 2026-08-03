@@ -232,7 +232,8 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
     if target_seconds and target_seconds > LONG_FORM_S and not script:
         return _storyboard_long(style, topic, article_url, int(target_seconds), learnings, brand)
     auto = target_seconds is None
-    n_beats = None if auto else max(3, min(30, round(target_seconds / 9)))
+    shot_s = float(style_pack(style).get('shot_seconds') or 9)
+    n_beats = None if auto else max(3, min(60, round(target_seconds / shot_s)))
     if article_url:
         art = fetch_article(article_url)
         src = ("SOURCE ARTICLE (background research ONLY — write completely ORIGINAL narration in your own words; "
@@ -244,8 +245,9 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
     else:
         src = f"TOPIC: {topic}"
     guide = style_pack(style).get('beat_grammar') or ''
-    scope = ("YOU decide the right length and number of beats (6-18) from the topic's depth — a simple point is "
-             "short, a rich topic runs longer; do not pad or truncate."
+    scope = (f"YOU decide the right length and number of beats from the topic's depth. Each beat is ONE camera "
+             f"shot of about {shot_s:.0f} seconds, so a short piece is 8-12 beats and a rich one runs longer — "
+             f"cut often rather than holding one shot; do not pad or truncate."
              if auto else
              f"Around {n_beats} beats (use fewer/more only if genuinely needed), ~{target_seconds}s spoken.")
     learn = (f"\n\nLEARNINGS FROM PAST PERFORMANCE (apply these to improve reach/engagement):\n{learnings}\n"
@@ -465,6 +467,20 @@ def _stage(vid, stage, **extra):
     except Exception:
         pass
 
+def _veo_brief(pk, beat, speaker_desc):
+    """Veo renders the shot AND performs the line, so the mouth matches the words.
+    The prompt therefore carries the spoken line, not just the motion."""
+    line = (beat.get('vo_text') or '').strip()
+    who = speaker_desc or 'the character'
+    shot = (beat.get('meta') or {}).get('shot') or 'medium shot'
+    return (f"{shot}. {(beat.get('scene_prompt') or '').strip()}\n\n"
+            f"{who} speaks this line out loud, clearly and in character, with accurate lip sync: "
+            f"\"{line}\"\n\n"
+            f"{pk.get('motion_prompt') or ''} {(beat.get('motion_prompt') or '')}\n"
+            f"Keep the art style, character design and colours exactly as in the reference image. "
+            f"Natural blinks and eyebrow movement. No on-screen text, captions, subtitles or watermarks. "
+            f"No background music.")
+
 def _motion_brief(style, motion_prompt, speaker=None):
     """Animation direction for the image-to-video pass — each style says how much
     life its characters should have. When we know who is talking, say so: the
@@ -616,8 +632,12 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
     cost = 0.0
     wav = wd/'audio'/f'{i:02d}.wav'
     speaker_key = (b.get('meta') or {}).get('speaker')
-    if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key))
-    vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
+    pk = style_pack(style)
+    veo_voice = (pk.get('video_model') or 'omni').startswith('veo') and kind == 'scene'
+    vo_asset = None
+    if not veo_voice:
+        if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key))
+        vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
     still_path = wd/'stills'/f'{i:02d}.png'
     if kind in ('board', 'stat'):
         d_beat = round(_dur(wav) + 0.6, 2); clip_path = wd/'clips'/f'{i:02d}.mp4'
@@ -627,7 +647,6 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
         ca = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i} {kind}', tags=[kind, style], style=style, duration_s=d_beat)
         supa.update('video_beats', bid, {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': d_beat, 'still_asset': sa['id'], 'clip_asset': ca['id']})
         return cost
-    pk = style_pack(style)
     if pk.get('render_mode', 'image_to_video') == 'image_to_video':
         import base64
         cast_refs, cast_desc = _cast_for_beat(b, video_cast, style)
@@ -639,11 +658,27 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
                       {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
         img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
         still_path.write_bytes(img); cost += 0.14
-        clip = lib.omni_i2v(img, _motion_brief(style, b.get('motion_prompt'), _speaker_name(b, style)))
+        vm = pk.get('video_model') or 'omni'
+        if vm.startswith('veo'):
+            model = {'veo': 'veo-3.1-generate-preview', 'veo-fast': 'veo-3.1-fast-generate-preview',
+                     'veo-lite': 'veo-3.1-lite-generate-preview'}.get(vm, vm)
+            clip = lib.veo_i2v(img, _veo_brief(pk, b, cast_desc or _speaker_name(b, style)), model=model)
+            cost += 1.20
+        else:
+            clip = lib.omni_i2v(img, _motion_brief(style, b.get('motion_prompt'), _speaker_name(b, style)))
     else:
         clip = lib.omni_video(_look_for_beat(pk, b) + "\n\nScene: " + (b['scene_prompt'] or '')); img = None
     cost += 1.05
     clip_path = wd/'clips'/f'{i:02d}.mp4'; clip_path.write_bytes(clip)
+
+    if vo_asset is None:
+        # Veo performed the line — lift its audio out as this beat's voice track
+        subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', str(clip_path), '-vn',
+                        '-ac', '1', '-ar', '24000', str(wav)], capture_output=True, text=True)
+        if not wav.exists() or wav.stat().st_size < 1000:
+            lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key))
+        vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo (in-clip)',
+                                     tags=['vo', 'veo'], duration_s=_dur(wav))
 
     # optional lip sync: match the speaking character's mouth to their line
     if pk.get('lip_sync') and speaker_key:
@@ -660,7 +695,11 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
             # never fail a beat over lip sync — keep the un-synced clip
             print(f'  beat {i}: lip sync skipped ({str(e)[:120]})', flush=True)
 
-    patch = {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': round(_dur(wav) + 0.6, 2)}
+    is_veo = (pk.get('video_model') or 'omni').startswith('veo') and kind == 'scene'
+    dur = round(_dur(clip_path), 2) if is_veo else round(_dur(wav) + 0.6, 2)
+    patch = {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': dur}
+    if is_veo:
+        patch['meta'] = {**(b.get('meta') or {}), 'no_trim': True, 'in_clip_audio': True}
     if img:
         sa = supa.upload_asset(str(still_path), 'still', title=f'{vid[:8]} beat{i}', tags=['auto', style], style=style, cost=0.14)
         patch['still_asset'] = sa['id']
@@ -748,10 +787,11 @@ def assemble_video(video_id):
     ev = []
     for b in beats:
         vo_d = float(b['dur_s']) - 0.6
+        lead = 0.0 if (b.get('meta') or {}).get('in_clip_audio') else 0.25
         lines = chunk(b['vo_text']); tot = sum(len(l) for l in lines); pos = 0
         for i, l in enumerate(lines):
-            st = b['start'] + 0.25 + vo_d*(pos/tot); pos += len(l)
-            en = b['start'] + 0.25 + vo_d*(pos/tot)
+            st = b['start'] + lead + vo_d*(pos/tot); pos += len(l)
+            en = b['start'] + lead + vo_d*(pos/tot)
             if i == len(lines)-1: en = min(en+0.3, b['start']+float(b['dur_s']))
             ev.append(f"Dialogue: 0,{ts(st)},{ts(en-0.05)},Cap,,0,0,0,,{EFF}{l.strip().strip('–').strip()}")
     ass = ("[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
@@ -759,8 +799,11 @@ def assemble_video(video_id):
         "Style: Cap,Poppins SemiBold,46,&H00FFFFFF,&H00FFFFFF,&H00382500,&H78000000,0,0,0,0,100,100,0,0,1,3,1.5,2,80,80,54,1\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n") + '\n'.join(ev) + '\n'
     (wd/'subs.ass').write_text(ass)
-    _run(['ffmpeg','-nostdin','-y','-i',str(wd/'work.mp4'),
-          '-vf', f"ass={wd}/subs.ass:fontsdir={FONTS_DIR},eq=saturation=1.08:gamma=1.02",
+    if style_pack(v.get('style')).get('burn_captions', True):
+        vf = f"ass={wd}/subs.ass:fontsdir={FONTS_DIR},eq=saturation=1.08:gamma=1.02"
+    else:
+        vf = "eq=saturation=1.08:gamma=1.02"
+    _run(['ffmpeg','-nostdin','-y','-i',str(wd/'work.mp4'), '-vf', vf,
           '-an','-c:v','libx264','-crf','18','-preset','medium',str(wd/'work_subs.mp4')])
 
     # audio
@@ -768,7 +811,8 @@ def assemble_video(video_id):
     for b in beats:
         wav = wd/'audio'/f"{b['idx']:02d}.wav"
         if not wav.exists(): _fetch_asset(b['vo_asset'], wav)
-        dl = int((b['start'] + 0.25)*1000)
+        lead = 0.0 if (b.get('meta') or {}).get('in_clip_audio') else 0.25
+        dl = int((b['start'] + lead)*1000)
         inp += ['-i', str(wav)]
         fc.append(f'[{i}:a]adelay={dl}|{dl}[n{i}]'); nl.append(f'[n{i}]'); i += 1
     fc.append(''.join(nl) + f'amix=inputs={len(nl)}:normalize=0:duration=longest,apad,atrim=0:{total}[narr]')

@@ -198,3 +198,4 @@ def vision_qa(frame_paths, checklist, model='gemini-2.5-flash'):
     txt = d['candidates'][0]['content']['parts'][0]['text']
     try: return json.loads(re.sub(r'^```json|```$','',txt.strip()).strip())
     except Exception: return {'pass': True, 'issues': [], '_raw': txt[:200]}
+
