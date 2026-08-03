@@ -1,0 +1,22 @@
+{
+  "name": "Flat2D Studio",
+  "style_lock": "Flat 2D vector motion-graphics explainer, clean modern corporate style. Flat solid colors, simple geometric shapes, subtle thin outlines, friendly and professional. NO gradients, NO photorealism, NO 3D. NO text, letters, numbers, words or labels anywhere. NO logos, NO watermarks, NO brand names, NO \"created with\" or \"made using\" badges. Consistent character proportions.",
+  "colors": {
+    "navy": "#0D2A3A",
+    "lime": "#A6CE39",
+    "white": "#FFFFFF",
+    "orange": "#E8944A",
+    "teal": "#2FA4A0"
+  },
+  "voice": "Kore",
+  "fonts": {
+    "display": "Arial Rounded Bold.ttf",
+    "body": "Arial Bold.ttf"
+  },
+  "cast": {
+    "maya": "Maya \u2014 a friendly professional female legal advisor, around 35, warm medium-brown skin, neat short dark bob hair, wearing a navy blazer over a white top with a small teal accent scarf, calm confident smile.",
+    "tom": "Tom \u2014 an approachable male client, around 40, light-medium skin, short brown hair, wearing a light blue button shirt (smart casual), friendly slightly-unsure expression."
+  },
+  "wordmark": "FAST ILA",
+  "tagline": "Independent Legal Advice"
+}

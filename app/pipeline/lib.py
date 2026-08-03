@@ -21,7 +21,16 @@ def _cred(k):
 ROOT = Path('/Users/rudra/OpenMontage/pipelines/flat2d-studio')
 GEM = _cred('GEMINI_API_KEY')
 BASE = 'https://generativelanguage.googleapis.com/v1beta'
-BRAND = json.loads((ROOT/'brand/brand.json').read_text())
+
+def _brand_file():
+    """brand.json lives under brand/ locally and in ASSETS_ROOT in the container."""
+    for p in (ROOT/'brand/brand.json',
+              Path(os.environ.get('ASSETS_ROOT', '')) / 'brand.json',
+              Path(__file__).resolve().parent.parent / 'assets/brand.json'):
+        if p.is_file(): return p
+    raise FileNotFoundError('brand.json not found (checked brand/ and ASSETS_ROOT)')
+
+BRAND = json.loads(_brand_file().read_text())
 
 # ---- cost tracking (approx, USD) ----
 COST = {'usd': 0.0}
