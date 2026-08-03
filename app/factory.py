@@ -182,7 +182,13 @@ def _cast_for_beat(beat, video_cast, style='vyond'):
             nm, desc = (c.get('name') or ''), (c.get('description') or '')
             descs.append(desc if desc.lower().startswith(nm.lower()) else f'{nm}, {desc}'.strip(', '))
         elif k in custom:
-            descs.append(custom[k].get('desc', ''))
+            c = custom[k]
+            if c.get('ref_url'):
+                img = _fetch_ref(c['ref_url'])
+                if img: refs.append(img)
+            nm = c.get('name') or ''
+            d2 = c.get('desc') or ''
+            descs.append(d2 if d2.lower().startswith(nm.lower()) else f'{nm}, {d2}'.strip(', '))
     return refs, ('; '.join([d for d in descs if d]))
 
 def _dur(p):
@@ -526,6 +532,57 @@ def _beat_plan(kind, brand_name, style):
                 'how': 'figure + label, gentle push-in, VO'}
     return {'makes': kind, 'uses': '', 'how': ''}
 
+def _build_cast_bible(vid, style, beats, pk):
+    """Lock the story's characters before anything is rendered.
+
+    Without this every shot is drawn from scratch and the model invents a new
+    boy, a new girl and a new driver each time. We ask who recurs, generate ONE
+    reference image each, and every scene is then conditioned on those images —
+    which is what keeps a character the same person for a whole episode.
+    """
+    import base64
+    names = []
+    for b in beats:
+        for n in ([b.get('speaker')] if b.get('speaker') else []):
+            if isinstance(n, str) and n not in names: names.append(n)
+    if not names:
+        return {}
+    digest = [{'speaker': b.get('speaker'), 'still': (b.get('still') or '')[:220]} for b in beats]
+    try:
+        bible = json.loads(lib.text_gen(
+            "These are the shots of one animated episode. List the RECURRING characters who appear in it.\n"
+            f"{json.dumps(digest)}\n\n"
+            "For each, write a precise visual description that will keep them identical in every shot: "
+            "age, build, hair, face, skin tone, exact clothing and colours. No names of real people.\n"
+            'Return ONLY JSON: {"characters":[{"name":"...","description":"..."}]}'))
+    except Exception as e:
+        print(f'  cast bible failed: {str(e)[:120]}', flush=True)
+        return {}
+
+    custom = {}
+    for c in (bible.get('characters') or [])[:5]:
+        nm, desc = (c.get('name') or '').strip(), (c.get('description') or '').strip()
+        if not nm or not desc: continue
+        key = 'c_' + ''.join(ch for ch in nm.lower() if ch.isalnum())[:16]
+        try:
+            prompt = (f"{pk.get('look_prompt','')}\n\nFull body character reference, facing forward, neutral "
+                      f"friendly pose, centred on a plain solid white background. Character: {desc}. "
+                      f"No text, letters, numbers, logos or watermarks.")
+            d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
+                          {'contents': [{'parts': [{'text': prompt}]}],
+                           'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
+            img = next(base64.b64decode(x['inlineData']['data'])
+                       for x in d['candidates'][0]['content']['parts'] if 'inlineData' in x)
+            ref = RUNS / vid / 'cast'; ref.mkdir(parents=True, exist_ok=True)
+            fp = ref / f'{key}.png'; fp.write_bytes(img)
+            a = supa.upload_asset(str(fp), 'char_ref', title=f'{nm} ({style})', tags=['cast', style], style=style)
+            custom[key] = {'name': nm, 'desc': desc, 'ref_url': supa.public_url(a['storage_path'])}
+            print(f'  cast locked: {nm}', flush=True)
+        except Exception as e:
+            print(f'  cast ref failed for {nm}: {str(e)[:100]}', flush=True)
+    return custom
+
+
 def plan_video(job):
     """Cheap planning phase (Fable 5 only): storyboard -> planned beats -> plan_review. No generation."""
     payload = job.get('payload') or {}
@@ -556,6 +613,10 @@ def plan_video(job):
                     article_url=payload.get('article_url'),
                     target_seconds=int(ts) if ts else None, learnings=learnings, brand=brand)
     beats = sb['beats']
+    pk_plan = style_pack(style)
+    style_has_cast = any((c.get('style') or style) == style for c in _db_characters())
+    bible = {} if style_has_cast else _build_cast_bible(vid, style, beats, pk_plan)
+    name_to_key = {v['name'].lower(): k for k, v in bible.items()}
     counts = {'scene': 0, 'board': 0, 'stat': 0}
     est_total = 0.0; est_cost = 0.0
     for i, b in enumerate(beats):
@@ -568,6 +629,13 @@ def plan_video(job):
         if b.get('shot'): meta['shot'] = b['shot']
         # styles without a registered cast still name who talks, as free text
         if b.get('speaker') and b['speaker'] not in known_cast: meta['speaker_name'] = str(b['speaker'])
+        if bible and kind == 'scene':
+            # cast this shot from the locked bible so the same people appear throughout
+            want = [str(x) for x in (b.get('cast') or [])] + ([str(b['speaker'])] if b.get('speaker') else [])
+            keys = [name_to_key[w.lower()] for w in want if w.lower() in name_to_key]
+            meta['cast'] = list(dict.fromkeys(keys)) or list(bible)[:2]
+            spk = str(b.get('speaker') or '').lower()
+            if spk in name_to_key: meta['speaker'] = name_to_key[spk]
         # a series pins its cast, so every episode uses the same characters
         if series_cast and kind == 'scene':
             meta['cast'] = [c for c in (meta.get('cast') or []) if c in series_cast] or list(series_cast)
@@ -576,7 +644,8 @@ def plan_video(job):
             'video_id': vid, 'idx': i, 'kind': kind, 'vo_text': b['vo'],
             'scene_prompt': b.get('still') or b.get('scene', ''), 'motion_prompt': b.get('motion', ''),
             'dur_s': round(dur + 0.6, 2), 'status': 'planned', 'meta': meta})
-    plan = {'title': sb.get('title'), 'style': style, 'brand': brand_name,
+    plan = {'cast': {'custom': bible} if bible else {},
+            'title': sb.get('title'), 'style': style, 'brand': brand_name,
             'scenes': counts.get('scene', 0), 'boards': counts.get('board', 0), 'stats': counts.get('stat', 0),
             'beats': len(beats), 'est_seconds': round(est_total, 1), 'est_cost': round(est_cost, 2),
             'has_bookends': bool(brand_name)}
@@ -668,11 +737,13 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
                      'veo-lite': 'veo-3.1-lite-generate-preview'}.get(vm, vm)
             clip = lib.veo_i2v(img, _veo_brief(pk, b, cast_desc or _speaker_name(b, style)), model=model)
             cost += 1.20
+            veo_used = True
         else:
             clip = lib.omni_i2v(img, _motion_brief(style, b.get('motion_prompt'), _speaker_name(b, style)))
+            veo_used = False
     else:
         clip = lib.omni_video(_look_for_beat(pk, b) + "\n\nScene: " + (b['scene_prompt'] or '')); img = None
-    cost += 1.05
+    if not locals().get('veo_used'): cost += 1.05   # veo already billed above
     clip_path = wd/'clips'/f'{i:02d}.mp4'; clip_path.write_bytes(clip)
 
     if vo_asset is None:
