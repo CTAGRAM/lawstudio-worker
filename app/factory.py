@@ -3,9 +3,14 @@ produce_video: storyboard (Fable 5) -> TTS -> stills -> omni i2v clips, uploadin
 artifact to the Supabase library and updating video_beats live.
 assemble_video: brand intro + beats + brand outro, ASS subtitles, VO+bed master, grade, upload.
 reroll_beat: regenerate one beat's still+clip with an edit prompt."""
-import json, subprocess, uuid
+import json, subprocess, uuid, time
 from pathlib import Path
 from pipeline import lib, supa
+
+# A beat that fails is retried in place before it is marked failed — most
+# failures are transient (model hiccup, rate limit, a flaky ffmpeg run).
+BEAT_TRIES = 3
+BEAT_RETRY_S = 20
 
 import os as _os
 ASSET_ROOT = _os.environ.get('ASSETS_ROOT')
@@ -69,9 +74,19 @@ def _dur(p):
     return float(subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',str(p)],
                                 capture_output=True, text=True).stdout.strip() or 0)
 
+def _ff_err(stderr):
+    """ffmpeg floods stderr with progress lines, so a plain tail hides the real
+    cause. Keep the lines that actually explain the failure."""
+    lines = [l.strip() for l in (stderr or '').splitlines() if l.strip()]
+    bad = [l for l in lines if any(k in l for k in (
+        'Error', 'error', 'Invalid', 'invalid', 'No such', 'not found', 'Unable',
+        'failed', 'Failed', 'Cannot', 'No space', 'Permission denied', 'Conversion failed'))]
+    keep = bad[-6:] if bad else [l for l in lines if 'fps=' not in l][-6:]
+    return '\n'.join(keep) or '\n'.join(lines[-4:])
+
 def _run(cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode: raise RuntimeError('ffmpeg: ' + '\n'.join((r.stderr or '').splitlines()[-4:]))
+    if r.returncode: raise RuntimeError('ffmpeg: ' + _ff_err(r.stderr))
 
 def fetch_article(url):
     """Fetch an article and reduce to readable text (for summarize-and-transform scripting)."""
@@ -238,7 +253,7 @@ def render_board(spec, palette, still_png, out_mp4, dur):
     cmd += ['-filter_complex', ';'.join(fc), '-map', f'[v{len(rows)}]',
             '-t', str(dur), '-r', '30', '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p', str(out_mp4)]
     r = __import__('subprocess').run(cmd, capture_output=True, text=True)
-    if r.returncode: raise RuntimeError('board render: ' + '\n'.join((r.stderr or '').splitlines()[-4:]))
+    if r.returncode: raise RuntimeError('board render: ' + _ff_err(r.stderr))
 
 def render_stat(spec, palette, still_png, out_mp4, dur):
     from PIL import Image, ImageDraw, ImageFont
@@ -346,52 +361,72 @@ def generate_video(job):
     beats = sorted(supa.select('video_beats', video_id=f'eq.{vid}'), key=lambda b: b['idx'])
     beats = [b for b in beats if b['status'] in ('planned', 'pending', 'failed')]
     total_cost = 0.0
+    total_cost = 0.0
     for b in beats:
-        bid = b['id']; i = b['idx']; kind = b['kind']
+        bid = b['id']; i = b['idx']
         supa.update('video_beats', bid, {'status': 'pending'})
-        try:
-            wav = wd/'audio'/f'{i:02d}.wav'
-            if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style))
-            vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
-            still_path = wd/'stills'/f'{i:02d}.png'
-            if kind in ('board', 'stat'):
-                d_beat = round(_dur(wav) + 0.6, 2); clip_path = wd/'clips'/f'{i:02d}.mp4'
-                spec = (b.get('meta') or {}).get(kind) or {}
-                (render_board if kind == 'board' else render_stat)(spec, palette, str(still_path), str(clip_path), d_beat)
-                sa = supa.upload_asset(str(still_path), 'graphic', title=f'{vid[:8]} beat{i} {kind}', tags=[kind, style], style=style)
-                ca = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i} {kind}', tags=[kind, style], style=style, duration_s=d_beat)
-                supa.update('video_beats', bid, {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': d_beat, 'still_asset': sa['id'], 'clip_asset': ca['id']})
-                continue
-            if style in ('vyond', 'kids'):
-                import base64
-                cast_refs, cast_desc = _cast_for_beat(b, video_cast, style)
-                if not cast_refs: cast_refs = [Path(p).read_bytes() for p in STYLE_REFS.get(style, [])]
-                parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in cast_refs]
-                extra = (" Featured character(s): " + cast_desc + ".") if cast_desc else ""
-                base_style = KIDS_STYLE if style == 'kids' else VYOND_STYLE
-                parts.append({'text': base_style + extra + "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')})
-                d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
-                              {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
-                img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
-                still_path.write_bytes(img); total_cost += 0.14
-                clip = lib.omni_i2v(img, "Animate this exact image as a flat 2D explainer video clip. Keep the art style, "
-                                    "characters, colors and layout exactly as shown. " + (b.get('motion_prompt') or 'Subtle natural motion.') + " No new elements, no text.")
-            else:
-                prompt = VOX_STYLE.format(bg=(b.get('meta') or {}).get('bg', 'Flat mustard-yellow paper background')) + "\n\nScene: " + (b['scene_prompt'] or '')
-                clip = lib.omni_video(prompt); img = None
-            total_cost += 1.05
-            clip_path = wd/'clips'/f'{i:02d}.mp4'; clip_path.write_bytes(clip)
-            patch = {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': round(_dur(wav) + 0.6, 2)}
-            if img:
-                sa = supa.upload_asset(str(still_path), 'still', title=f'{vid[:8]} beat{i}', tags=['auto', style], style=style, cost=0.14)
-                patch['still_asset'] = sa['id']
-            ca = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i}', tags=['auto', style], style=style, duration_s=_dur(clip_path), cost=1.05)
-            patch['clip_asset'] = ca['id']
-            supa.update('video_beats', bid, patch)
-        except Exception as e:
-            supa.update('video_beats', bid, {'status': 'failed', 'meta': {**(b.get('meta') or {}), 'error': str(e)[:300]}})
+        last_err = None
+        for attempt in range(1, BEAT_TRIES + 1):
+            try:
+                total_cost += _generate_beat(b, vid, wd, style, palette, video_cast)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                print(f'  beat {i} attempt {attempt}/{BEAT_TRIES} failed: {str(e)[:200]}', flush=True)
+                if attempt < BEAT_TRIES:
+                    time.sleep(BEAT_RETRY_S * attempt)
+        if last_err is not None:
+            supa.update('video_beats', bid, {'status': 'failed',
+                        'meta': {**(b.get('meta') or {}), 'error': f'after {BEAT_TRIES} tries: {last_err}'[:600]}})
     supa.update('videos', vid, {'status': 'review', 'total_cost': round(total_cost, 2)})
     return f'generated {len(beats)} beats, ${total_cost:.2f}'
+
+
+def _generate_beat(b, vid, wd, style, palette, video_cast):
+    """Render one beat (vo + visual) and mark it done. Returns the cost incurred.
+    Raises on failure so the caller can retry."""
+    bid = b['id']; i = b['idx']; kind = b['kind']
+    cost = 0.0
+    wav = wd/'audio'/f'{i:02d}.wav'
+    if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style))
+    vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
+    still_path = wd/'stills'/f'{i:02d}.png'
+    if kind in ('board', 'stat'):
+        d_beat = round(_dur(wav) + 0.6, 2); clip_path = wd/'clips'/f'{i:02d}.mp4'
+        spec = (b.get('meta') or {}).get(kind) or {}
+        (render_board if kind == 'board' else render_stat)(spec, palette, str(still_path), str(clip_path), d_beat)
+        sa = supa.upload_asset(str(still_path), 'graphic', title=f'{vid[:8]} beat{i} {kind}', tags=[kind, style], style=style)
+        ca = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i} {kind}', tags=[kind, style], style=style, duration_s=d_beat)
+        supa.update('video_beats', bid, {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': d_beat, 'still_asset': sa['id'], 'clip_asset': ca['id']})
+        return cost
+    if style in ('vyond', 'kids'):
+        import base64
+        cast_refs, cast_desc = _cast_for_beat(b, video_cast, style)
+        if not cast_refs: cast_refs = [Path(p).read_bytes() for p in STYLE_REFS.get(style, [])]
+        parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in cast_refs]
+        extra = (" Featured character(s): " + cast_desc + ".") if cast_desc else ""
+        base_style = KIDS_STYLE if style == 'kids' else VYOND_STYLE
+        parts.append({'text': base_style + extra + "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')})
+        d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
+                      {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
+        img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
+        still_path.write_bytes(img); cost += 0.14
+        clip = lib.omni_i2v(img, "Animate this exact image as a flat 2D explainer video clip. Keep the art style, "
+                            "characters, colors and layout exactly as shown. " + (b.get('motion_prompt') or 'Subtle natural motion.') + " No new elements, no text.")
+    else:
+        prompt = VOX_STYLE.format(bg=(b.get('meta') or {}).get('bg', 'Flat mustard-yellow paper background')) + "\n\nScene: " + (b['scene_prompt'] or '')
+        clip = lib.omni_video(prompt); img = None
+    cost += 1.05
+    clip_path = wd/'clips'/f'{i:02d}.mp4'; clip_path.write_bytes(clip)
+    patch = {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': round(_dur(wav) + 0.6, 2)}
+    if img:
+        sa = supa.upload_asset(str(still_path), 'still', title=f'{vid[:8]} beat{i}', tags=['auto', style], style=style, cost=0.14)
+        patch['still_asset'] = sa['id']
+    ca = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i}', tags=['auto', style], style=style, duration_s=_dur(clip_path), cost=1.05)
+    patch['clip_asset'] = ca['id']
+    supa.update('video_beats', bid, patch)
+    return cost
 
 def produce_video(job):
     payload = job.get('payload') or {}
@@ -574,7 +609,7 @@ def assemble_video(video_id):
     r = subprocess.run(['ffmpeg','-nostdin','-y',*inp,'-filter_complex',';'.join(fc),
                         '-map','0:v','-map','[a]','-c:v','copy','-c:a','aac','-b:a','192k',
                         '-movflags','+faststart',str(wd/'final.mp4')], capture_output=True, text=True)
-    if r.returncode: raise RuntimeError('mux: ' + '\n'.join(r.stderr.splitlines()[-4:]))
+    if r.returncode: raise RuntimeError('mux: ' + _ff_err(r.stderr))
 
     fa = supa.upload_asset(str(wd/'final.mp4'), 'video', title=v.get('title') or 'video',
                            tags=['final'], style=v['style'], brand_id=v.get('brand_id'), duration_s=total)
@@ -602,13 +637,23 @@ def reroll_beat(payload):
         if v.get('brand_id'):
             try: palette = supa.select('brands', id=f"eq.{v['brand_id']}")[0].get('palette')
             except Exception: palette = None
+        # a beat that failed mid-generation may never have stored its voiceover
+        patch = {}
+        if not b.get('vo_asset') and b.get('vo_text'):
+            (wd/'audio').mkdir(parents=True, exist_ok=True)
+            wav = wd/'audio'/f'{i:02d}.wav'
+            if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style))
+            va = supa.upload_asset(str(wav), 'vo', title=f'reroll beat{i} vo', tags=['vo'], duration_s=_dur(wav))
+            patch['vo_asset'] = va['id']
+            b['dur_s'] = round(_dur(wav) + 0.6, 2); patch['dur_s'] = b['dur_s']
         d_beat = float(b.get('dur_s') or 6.0)
         sp = wd/'stills'/f'{i:02d}.png'; cp = wd/'clips'/f'{i:02d}.mp4'
         (render_board if kind == 'board' else render_stat)(spec, palette, str(sp), str(cp), d_beat)
         sa = supa.upload_asset(str(sp), 'graphic', title=f'reroll beat{i} {kind}', tags=['reroll', kind], style=style)
         ca = supa.upload_asset(str(cp), 'clip', title=f'reroll beat{i} {kind}', tags=['reroll', kind], style=style, duration_s=d_beat)
-        meta = dict(b.get('meta') or {}); meta[kind] = spec
-        supa.update('video_beats', bid, {'status': 'done', 'still_asset': sa['id'], 'clip_asset': ca['id'], 'meta': meta})
+        meta = dict(b.get('meta') or {}); meta[kind] = spec; meta.pop('error', None)
+        supa.update('video_beats', bid, {'status': 'done', 'still_asset': sa['id'], 'clip_asset': ca['id'],
+                                         'meta': meta, **patch})
         return f'rerolled {kind} beat {i}'
     scene = b['scene_prompt'] + (f"\nADJUSTMENT: {note}" if note else '')
     if style in ('vyond', 'kids'):
@@ -632,6 +677,8 @@ def reroll_beat(payload):
     ca = supa.upload_asset(str(cp), 'clip', title=f'reroll beat{i}', tags=['reroll', style], style=style, duration_s=_dur(cp))
     patch = {'status': 'done', 'clip_asset': ca['id']}
     if sa: patch['still_asset'] = sa['id']
+    if (b.get('meta') or {}).get('error'):
+        m = dict(b['meta']); m.pop('error', None); patch['meta'] = m
     supa.update('video_beats', bid, patch)
     return f'rerolled beat {i}'
 

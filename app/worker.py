@@ -15,6 +15,8 @@ from pipeline import supa
 
 LOG_FILE = ROOT / 'worker.log'
 POLL_S = 10
+JOB_TRIES = 3      # total attempts per job before it is marked failed
+JOB_RETRY_S = 30   # base backoff between attempts (grows per attempt)
 
 
 def log(msg):
@@ -68,8 +70,21 @@ def _dispatch(job):
             msg = factory.assemble_video(job['video_id'])
         elif jtype == 'edit':
             msg = factory.edit_video(job)
-        else:
-            msg = factory.reroll_beat(job.get('payload') or {})
+        elif jtype == 'reroll_beat':
+            payload = job.get('payload') or {}
+            try:
+                msg = factory.reroll_beat(payload)
+            except Exception as e:
+                # reroll_beat flips the beat to 'pending' first; if it dies the beat
+                # would sit "still rendering" forever. Put it back to failed.
+                bid = payload.get('beat_id')
+                if bid:
+                    try:
+                        b = supa.select('video_beats', id=f'eq.{bid}')[0]
+                        supa.update('video_beats', bid, {'status': 'failed',
+                                    'meta': {**(b.get('meta') or {}), 'error': str(e)[:600]}})
+                    except Exception: pass
+                raise
         supa.update_job(job['id'], {'status': 'done', 'log': msg})
     elif jtype == 'snippets':
         import factory
@@ -103,10 +118,21 @@ def poll_once():
     except Exception as e:
         err = f'{type(e).__name__}: {e}'
         log(f"job {job['id']} FAILED: {err}\n{traceback.format_exc()}")
+        # transient failures are common (model hiccups, network) — requeue a few
+        # times with a growing delay before giving up.
+        payload = job.get('payload') or {}
+        tries = int(payload.get('_tries', 0)) + 1
         try:
-            supa.update_job(job['id'], {'status': 'failed', 'log': err[:2000]})
+            if tries < JOB_TRIES:
+                time.sleep(JOB_RETRY_S * tries)
+                supa.update_job(job['id'], {'status': 'queued', 'payload': {**payload, '_tries': tries},
+                                            'log': f'attempt {tries}/{JOB_TRIES} failed, retrying — {err[:800]}'})
+                log(f"job {job['id']} requeued (attempt {tries}/{JOB_TRIES})")
+            else:
+                supa.update_job(job['id'], {'status': 'failed',
+                                            'log': f'failed after {tries} attempts — {err[:1500]}'})
         except Exception as e2:
-            log(f"job {job['id']} could not be marked failed: {e2}")
+            log(f"job {job['id']} could not be requeued/failed: {e2}")
     return True
 
 
