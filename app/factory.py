@@ -1,6 +1,6 @@
 """LawStudio factory — turns a dashboard job into a finished branded video.
-produce_video: storyboard (Fable 5) -> TTS -> stills -> omni i2v clips, uploading every
-artifact to the Supabase library and updating video_beats live.
+plan_video: storyboard (Fable 5) -> planned beats. generate_video: TTS -> stills ->
+omni clips, uploading every artifact to the Supabase library, updating beats live.
 assemble_video: brand intro + beats + brand outro, ASS subtitles, VO+bed master, grade, upload.
 reroll_beat: regenerate one beat's still+clip with an edit prompt."""
 import json, subprocess, uuid, time
@@ -60,6 +60,63 @@ STYLE_CAST = {
     'vyond': {'main', 'client', 'lawyer', 'amara', 'ben'},
 }
 
+# ---------------------------------------------------------------- style packs
+# A style is DATA, not code: its look, beat grammar, director briefing, motion,
+# voice and render path all live in the `styles` table. New styles can be added
+# from the dashboard without touching the pipeline, and nothing is shared
+# between them, so one vertical can never bleed into another.
+_STYLE_CACHE = {'at': 0.0, 'rows': {}}
+
+# Only used if the DB is unreachable — keeps old runs working.
+_FALLBACK_STYLE = {
+    'key': 'vyond', 'name': 'Vyond 2D', 'look_prompt': VYOND_STYLE,
+    'motion_prompt': 'Subtle natural motion.', 'beat_grammar': '',
+    'director_who': 'You are the director of a UK legal-explainer video studio.',
+    'director_rules': 'Accurate UK employment/legal content, qualitative framing (no invented statistics).',
+    'voice_name': 'Charon', 'voice_style': None, 'render_mode': 'image_to_video',
+    'bg_options': [], 'default_cast': ['main'], 'palette': {},
+}
+
+def _styles():
+    if time.time() - _STYLE_CACHE['at'] > 60:
+        try:
+            rows = supa.select('styles')
+            if rows:
+                _STYLE_CACHE['rows'] = {r['key']: r for r in rows}
+                _STYLE_CACHE['at'] = time.time()
+        except Exception:
+            pass
+    return _STYLE_CACHE['rows']
+
+def _style_refs(style):
+    """Fallback visual references for a style: the reference image of every
+    character that belongs to it. Nothing is shared across styles."""
+    out = []
+    for c in _db_characters():
+        if c.get('style') == style and c.get('ref_url'):
+            img = _fetch_ref(c['ref_url'])
+            if img: out.append(img)
+        if len(out) >= 2: break
+    if not out:  # bundled refs for the original built-ins
+        for pth in STYLE_REFS.get(style, []):
+            try: out.append(Path(pth).read_bytes())
+            except Exception: pass
+    return out
+
+def _look_for_beat(pk, beat):
+    """Look prompt for a text-to-video beat; {bg} is filled from the style's
+    background options when the style uses them."""
+    look = pk.get('look_prompt') or ''
+    if '{bg}' in look:
+        opts = pk.get('bg_options') or ['Flat mustard-yellow paper background']
+        bg = (beat.get('meta') or {}).get('bg') or opts[0]
+        look = look.replace('{bg}', bg)
+    return look
+
+def style_pack(key):
+    """Everything the pipeline needs to render one style."""
+    return _styles().get(key) or dict(_FALLBACK_STYLE, key=key or 'vyond')
+
 _CHAR_CACHE = {'at': 0.0, 'rows': []}
 
 def _db_characters():
@@ -86,11 +143,14 @@ def _cast_for_beat(beat, video_cast, style='vyond'):
     db = {c['key']: c for c in _db_characters()
           if not c.get('style') or not style or c.get('style') == style}
     keys = (beat.get('meta') or {}).get('cast')
-    allowed = STYLE_CAST.get(style)
+    # a style may only use characters that belong to it — this is what stops one
+    # vertical's cast appearing in another's video
+    allowed = STYLE_CAST.get(style) or set(db)
     if keys and allowed:
         custom_keys = set((video_cast or {}).get('custom', {}))
         keys = [k for k in keys if k in allowed or k in custom_keys or k in db]
-    if not keys: keys = ['pip'] if style == 'kids' else ['main']
+    if not keys:
+        keys = list(style_pack(style).get('default_cast') or []) or (list(db)[:1])
     refs, descs = [], []
     custom = (video_cast or {}).get('custom', {})   # {key: {name, desc}}
     for k in keys:
@@ -141,9 +201,10 @@ LONG_FORM_S = 240      # above this we storyboard section by section
 SECTION_S = 120        # each chunk covers roughly this much screen time
 
 def _director(style, brand=None):
-    """The brand's own director profile wins over the per-style default, so a new
-    niche (maths, rhymes, science…) briefs its own way without code changes."""
-    base = dict(DIRECTORS.get(style, DIRECTORS['vyond']))
+    """The brand's own director profile wins over the style's, so a new niche
+    (maths, rhymes, science…) briefs its own way without code changes."""
+    pk = style_pack(style)
+    base = {'who': pk.get('director_who') or '', 'rules': pk.get('director_rules') or ''}
     if brand:
         if brand.get('director_who'): base['who'] = brand['director_who']
         if brand.get('director_rules'): base['rules'] = brand['director_rules']
@@ -166,39 +227,7 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
                f"typically {n_beats} beats but let the script decide within +/-3; keep wording close):\n{script}")
     else:
         src = f"TOPIC: {topic}"
-    if style == 'vyond':
-        guide = ("MIX the beat kinds like a professional explainer (roughly 5 scenes, 2 boards, 1 stat for 8 beats; "
-                 "never two graphic beats in a row; open and close with a scene). Every beat has: id (b01_slug), kind, "
-                 "vo (1-2 spoken sentences, UK English, plain and reassuring).\n"
-                 "kind 'scene' additionally: still (wide 16:9 flat-2D scene featuring THE MAIN CHARACTER — a man with "
-                 "round glasses and light blue t-shirt — in warm rooms: office/home/meeting; concrete furniture and "
-                 "props; STRICT RULE: describe absolutely NO text, writing, signs, labels, charts with words or boards "
-                 "with lettering — all on-screen words are added by a separate graphics layer), "
-                 "motion (subtle flat-2D animation directions, static camera).\n"
-                 "kind 'board' additionally: board {title (max 4 words), bullets (3-5 short items, max 4 words each)} — "
-                 "a whiteboard-style build that visualises the vo.\n"
-                 "kind 'stat' additionally: stat {value (a short figure or phrase like '£12.21' or 'Age 21+'), label "
-                 "(max 6 words)} — one big takeaway number/fact.")
-    elif style == 'kids':
-        guide = ("MIX the beat kinds like a great kids' educational episode (roughly 6 scenes, 2 boards, 1 stat for "
-                 "9 beats; never two graphic beats in a row; open with a hook question and close with a warm "
-                 "recap). Every beat has: id (b01_slug), kind, vo (1-2 spoken sentences of simple, warm, playful "
-                 "narration a 6-10 year old understands — short words, concrete examples, no jargon).\n"
-                 "kind 'scene' additionally: still (wide 16:9 bright flat-2D cartoon scene featuring the CAST — "
-                 "MAYA (girl, glasses, yellow dungarees), LEO (boy, red hoodie) and PROFESSOR PIP (friendly owl "
-                 "teacher) — in cheerful kid settings: sunny classroom, cozy home, garden, outer space; concrete "
-                 "props; STRICT RULE: describe absolutely NO text, writing, signs, labels or lettering — all "
-                 "on-screen words come from a separate graphics layer), "
-                 "motion (gentle playful flat-2D animation directions, static camera), "
-                 "cast (array naming which of 'maya','leo','pip' appear).\n"
-                 "kind 'board' additionally: board {title (max 4 words), bullets (3-5 short items, max 4 words "
-                 "each)} — a colourful pin-board that visualises the vo.\n"
-                 "kind 'stat' additionally: stat {value (a short fun figure like '8 legs' or '365 days'), label "
-                 "(max 6 words)} — one big memorable fact.")
-    else:
-        guide = ("Each beat: id, kind 'scene', vo (energetic editorial narration), "
-                 "scene (a paper-collage visual metaphor: cutout photos, banknotes, crowds, arrows, charts — no characters needed), "
-                 "bg (one of: 'Flat mustard-yellow paper background','Flat brick-red paper background','Flat deep-navy background with halftone dots','Flat cream paper background').")
+    guide = style_pack(style).get('beat_grammar') or ''
     scope = ("YOU decide the right length and number of beats (6-18) from the topic's depth — a simple point is "
              "short, a rich topic runs longer; do not pad or truncate."
              if auto else
@@ -421,28 +450,24 @@ def _stage(vid, stage, **extra):
         pass
 
 def _motion_brief(style, motion_prompt):
-    """Animation direction for the image-to-video pass. Legal explainers want calm,
-    restrained motion; a kids channel needs characters that actually move."""
+    """Animation direction for the image-to-video pass — each style says how much
+    life its characters should have."""
     keep = ("Animate this exact image as a flat 2D animated clip. Keep the art style, characters, "
             "colours and layout exactly as shown. No new elements, no text. ")
-    if style == 'kids':
-        return (keep + (motion_prompt or '') +
-                " Make it lively and full of life: characters move their arms and heads, bounce and "
-                "gesture, blink and change expression, mouths move as they speak, props and background "
-                "details (leaves, clouds, wheels) animate too. Energetic and playful throughout, but "
-                "keep every character on-model.")
-    return keep + (motion_prompt or 'Subtle natural motion.')
+    return keep + (motion_prompt or '') + ' ' + (style_pack(style).get('motion_prompt') or '')
 
 def _voice_for(style):
-    """TTS kwargs per style: kids gets a warmer, playful delivery."""
-    if style == 'kids':
-        return {'voice': 'Kore', 'style': KIDS_VOICE_STYLE}
-    return {'voice': 'Charon'}
+    """TTS voice + delivery for a style."""
+    pk = style_pack(style)
+    out = {'voice': pk.get('voice_name') or 'Charon'}
+    if pk.get('voice_style'): out['style'] = pk['voice_style']
+    return out
 
 def _beat_plan(kind, brand_name, style):
     if kind == 'scene':
-        who = ('Maya, Leo & Professor Pip (locked kids cast)' if style == 'kids'
-               else 'the locked cast character' if style == 'vyond' else 'paper-collage cut-outs')
+        pk = style_pack(style)
+        cast = ', '.join(pk.get('default_cast') or []) or 'the chosen cast'
+        who = f"{cast} in the {pk.get('name', style)} style"
         return {'makes': 'AI-generated animated scene', 'uses': f'{who} + {style} style refs',
                 'how': 'nano-banana still → Omni image-to-video, VO + burned captions'}
     if kind == 'board':
@@ -569,22 +594,21 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
         ca = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i} {kind}', tags=[kind, style], style=style, duration_s=d_beat)
         supa.update('video_beats', bid, {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': d_beat, 'still_asset': sa['id'], 'clip_asset': ca['id']})
         return cost
-    if style in ('vyond', 'kids'):
+    pk = style_pack(style)
+    if pk.get('render_mode', 'image_to_video') == 'image_to_video':
         import base64
         cast_refs, cast_desc = _cast_for_beat(b, video_cast, style)
-        if not cast_refs: cast_refs = [Path(p).read_bytes() for p in STYLE_REFS.get(style, [])]
+        if not cast_refs: cast_refs = _style_refs(style)
         parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in cast_refs]
         extra = (" Featured character(s): " + cast_desc + ".") if cast_desc else ""
-        base_style = KIDS_STYLE if style == 'kids' else VYOND_STYLE
-        parts.append({'text': base_style + extra + "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')})
+        parts.append({'text': pk.get('look_prompt', '') + extra + "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')})
         d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
                       {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
         img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
         still_path.write_bytes(img); cost += 0.14
         clip = lib.omni_i2v(img, _motion_brief(style, b.get('motion_prompt')))
     else:
-        prompt = VOX_STYLE.format(bg=(b.get('meta') or {}).get('bg', 'Flat mustard-yellow paper background')) + "\n\nScene: " + (b['scene_prompt'] or '')
-        clip = lib.omni_video(prompt); img = None
+        clip = lib.omni_video(_look_for_beat(pk, b) + "\n\nScene: " + (b['scene_prompt'] or '')); img = None
     cost += 1.05
     clip_path = wd/'clips'/f'{i:02d}.mp4'; clip_path.write_bytes(clip)
     patch = {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': round(_dur(wav) + 0.6, 2)}
@@ -596,84 +620,6 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
     supa.update('video_beats', bid, patch)
     return cost
 
-def produce_video(job):
-    payload = job.get('payload') or {}
-    vid = job['video_id']
-    wd = RUNS / vid; (wd/'audio').mkdir(parents=True, exist_ok=True)
-    (wd/'stills').mkdir(exist_ok=True); (wd/'clips').mkdir(exist_ok=True)
-    supa.update('videos', vid, {'status': 'running'})
-    style = payload.get('style', 'vyond')
-    palette = None
-    if payload.get('brand_id'):
-        try: palette = supa.select('brands', id=f"eq.{payload['brand_id']}")[0].get('palette')
-        except Exception: palette = None
-
-    supa._rest('DELETE', 'video_beats', params={'video_id': f'eq.{vid}'})   # idempotent re-run
-    sb = storyboard(style, payload.get('topic'), payload.get('script'),
-                    article_url=payload.get('article_url'),
-                    target_seconds=int(payload.get('target_seconds') or 90))
-    beats = sb['beats']
-    if payload.get('title') is None and sb.get('title'):
-        supa.update('videos', vid, {'title': sb['title']})
-    rows = []
-    for i, b in enumerate(beats):
-        kind = b.get('kind', 'scene')
-        meta = {'bg': b.get('bg', '')}
-        if kind in ('board', 'stat'):
-            meta['no_trim'] = True
-            meta[kind] = b.get(kind) or {}
-        rows.append(supa.insert('video_beats', {
-            'video_id': vid, 'idx': i, 'kind': kind, 'vo_text': b['vo'],
-            'scene_prompt': b.get('still') or b.get('scene', ''), 'motion_prompt': b.get('motion', ''),
-            'status': 'pending', 'meta': meta}))
-    refs = [Path(p).read_bytes() for p in STYLE_REFS.get(style, [])]
-    total_cost = 0.0
-    for i, (b, row) in enumerate(zip(beats, rows)):
-        bid = row['id']
-        try:
-            wav = wd/'audio'/f'{i:02d}.wav'
-            if not wav.exists():
-                lib.tts(b['vo'], str(wav), **_voice_for(style))
-            vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
-            still_path = wd/'stills'/f'{i:02d}.png'
-            kind = b.get('kind', 'scene')
-            if kind in ('board', 'stat'):
-                d_beat = round(_dur(wav) + 0.6, 2)
-                clip_path = wd/'clips'/f'{i:02d}.mp4'
-                (render_board if kind == 'board' else render_stat)(b.get(kind) or {}, palette, str(still_path), str(clip_path), d_beat)
-                sa = supa.upload_asset(str(still_path), 'graphic', title=f'{vid[:8]} beat{i} {kind}', tags=[kind, style], style=style)
-                ca = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i} {kind}', tags=[kind, style], style=style, duration_s=d_beat)
-                supa.update('video_beats', bid, {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': d_beat,
-                                                 'still_asset': sa['id'], 'clip_asset': ca['id']})
-                continue
-            if style == 'vyond':
-                import base64
-                parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in refs]
-                parts.append({'text': VYOND_STYLE + "\n\nScene (wide 16:9): " + b['still']})
-                d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
-                              {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
-                img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
-                still_path.write_bytes(img); total_cost += 0.14
-                clip = lib.omni_i2v(img, "Animate this exact image as a flat 2D explainer video clip. Keep the art style, "
-                                    "characters, colors and layout exactly as shown. " + b.get('motion', 'Subtle natural motion.') +
-                                    " No new elements, no text.")
-            else:
-                prompt = VOX_STYLE.format(bg=b.get('bg', 'Flat mustard-yellow paper background')) + "\n\nScene: " + b['scene']
-                clip = lib.omni_video(prompt); img = None
-            total_cost += 1.05
-            clip_path = wd/'clips'/f'{i:02d}.mp4'; clip_path.write_bytes(clip)
-            patch = {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': round(_dur(wav) + 0.6, 2)}
-            if img:
-                sa = supa.upload_asset(str(still_path), 'still', title=f'{vid[:8]} beat{i}', tags=['auto', style], style=style, cost=0.14)
-                patch['still_asset'] = sa['id']
-            ca = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i}', tags=['auto', style], style=style,
-                                   duration_s=_dur(clip_path), cost=1.05)
-            patch['clip_asset'] = ca['id']
-            supa.update('video_beats', bid, patch)
-        except Exception as e:
-            supa.update('video_beats', bid, {'status': 'failed', 'meta': {'error': str(e)[:300]}})
-    supa.update('videos', vid, {'status': 'review', 'total_cost': round(total_cost, 2)})
-    return f'produced {len(beats)} beats, ${total_cost:.2f}'
 
 def _fetch_asset(asset_id, dest):
     row = supa.select('assets', id=f'eq.{asset_id}')[0]
@@ -826,13 +772,14 @@ def reroll_beat(payload):
                                          'meta': meta, **patch})
         return f'rerolled {kind} beat {i}'
     scene = b['scene_prompt'] + (f"\nADJUSTMENT: {note}" if note else '')
-    if style in ('vyond', 'kids'):
+    pk = style_pack(style)
+    if pk.get('render_mode', 'image_to_video') == 'image_to_video':
         import base64
         cast_refs, cast_desc = _cast_for_beat(b, {}, style)
-        refs = cast_refs or [Path(p).read_bytes() for p in STYLE_REFS.get(style, STYLE_REFS['vyond'])]
+        refs = cast_refs or _style_refs(style)
         parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in refs]
         extra = (" Featured character(s): " + cast_desc + ".") if cast_desc else ""
-        parts.append({'text': (KIDS_STYLE if style == 'kids' else VYOND_STYLE) + extra + "\n\nScene (wide 16:9): " + scene})
+        parts.append({'text': pk.get('look_prompt', '') + extra + "\n\nScene (wide 16:9): " + scene})
         d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
                       {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
         img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
@@ -841,8 +788,7 @@ def reroll_beat(payload):
                             "colors and layout exactly as shown. " + (b.get('motion_prompt') or 'Subtle natural motion.') + " No new elements, no text.")
         sa = supa.upload_asset(str(wd/'stills'/f'{i:02d}.png'), 'still', title=f'reroll beat{i}', tags=['reroll', style], style=style)
     else:
-        bg = (b.get('meta') or {}).get('bg', 'Flat mustard-yellow paper background')
-        clip = lib.omni_video(VOX_STYLE.format(bg=bg) + "\n\nScene: " + scene); sa = None
+        clip = lib.omni_video(_look_for_beat(pk, b) + "\n\nScene: " + scene); sa = None
     cp = wd/'clips'/f'{i:02d}.mp4'; cp.write_bytes(clip)
     ca = supa.upload_asset(str(cp), 'clip', title=f'reroll beat{i}', tags=['reroll', style], style=style, duration_s=_dur(cp))
     patch = {'status': 'done', 'clip_asset': ca['id']}
