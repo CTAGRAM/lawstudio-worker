@@ -140,11 +140,20 @@ def fetch_article(url):
 LONG_FORM_S = 240      # above this we storyboard section by section
 SECTION_S = 120        # each chunk covers roughly this much screen time
 
-def storyboard(style, topic, script, article_url=None, target_seconds=None, learnings=None):
+def _director(style, brand=None):
+    """The brand's own director profile wins over the per-style default, so a new
+    niche (maths, rhymes, science…) briefs its own way without code changes."""
+    base = dict(DIRECTORS.get(style, DIRECTORS['vyond']))
+    if brand:
+        if brand.get('director_who'): base['who'] = brand['director_who']
+        if brand.get('director_rules'): base['rules'] = brand['director_rules']
+    return base
+
+def storyboard(style, topic, script, article_url=None, target_seconds=None, learnings=None, brand=None):
     # long briefs can't come back as one JSON blob — outline first, then fill in
     # each section, so a 25-minute video is just many small, reliable calls.
     if target_seconds and target_seconds > LONG_FORM_S and not script:
-        return _storyboard_long(style, topic, article_url, int(target_seconds), learnings)
+        return _storyboard_long(style, topic, article_url, int(target_seconds), learnings, brand)
     auto = target_seconds is None
     n_beats = None if auto else max(3, min(30, round(target_seconds / 9)))
     if article_url:
@@ -198,21 +207,21 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
              if learnings else "")
     # The director profile must match the vertical — a kids channel briefed as a
     # "UK legal-explainer studio" turns "wheels on the bus" into bus licence law.
-    profile = DIRECTORS.get(style, DIRECTORS['vyond'])
+    profile = _director(style, brand)
     prompt = (f"{profile['who']} Write a storyboard as JSON.\n{src}\n\n"
               f"Style: {style}. {scope} {guide}{learn}\n"
               f"{profile['rules']} "
               'Return JSON: {"title": "...", "beats": [ ... ]}')
     return json.loads(lib.text_gen(prompt))
 
-def _storyboard_long(style, topic, article_url, target_seconds, learnings):
+def _storyboard_long(style, topic, article_url, target_seconds, learnings, brand=None):
     """Long form: outline the sections, then storyboard each one and stitch the
     beats together. Keeps every model call small enough to be reliable."""
     src = topic or ''
     if article_url:
         src = (fetch_article(article_url) + ("\n\nANGLE: " + topic if topic else ''))
     n_sections = max(2, round(target_seconds / SECTION_S))
-    profile = DIRECTORS.get(style, DIRECTORS['vyond'])
+    profile = _director(style, brand)
     outline = json.loads(lib.text_gen(
         f"{profile['who']} Plan a {round(target_seconds/60)}-minute video on:\n{src}\n\n"
         f"Break it into exactly {n_sections} sections that flow as one continuous video "
@@ -223,7 +232,7 @@ def _storyboard_long(style, topic, article_url, target_seconds, learnings):
     beats, seen = [], 0
     for i, sec in enumerate(sections):
         part = storyboard(style, f"{sec.get('heading','')} — {sec.get('covers','')}", None,
-                          target_seconds=SECTION_S, learnings=learnings)
+                          target_seconds=SECTION_S, learnings=learnings, brand=brand)
         for b in (part.get('beats') or []):
             b['id'] = f"s{i:02d}_{b.get('id', 'b')}"
             beats.append(b)
@@ -450,9 +459,13 @@ def plan_video(job):
     vid = job['video_id']
     supa.update('videos', vid, {'status': 'planning'})
     style = payload.get('style', 'vyond')
-    brand_name = None
+    brand_name, brand = None, None
     if payload.get('brand_id'):
-        try: brand_name = supa.select('brands', id=f"eq.{payload['brand_id']}")[0].get('name')
+        try:
+            brand = supa.select('brands', id=f"eq.{payload['brand_id']}")[0]
+            brand_name = brand.get('name')
+            # a brand can pin its own style (a maths channel isn't a legal one)
+            if brand.get('default_style') and not payload.get('style'): style = brand['default_style']
         except Exception: pass
     supa._rest('DELETE', 'video_beats', params={'video_id': f'eq.{vid}'})
     ts = payload.get('target_seconds')
@@ -465,7 +478,7 @@ def plan_video(job):
         learnings = None
     sb = storyboard(style, payload.get('topic'), payload.get('script'),
                     article_url=payload.get('article_url'),
-                    target_seconds=int(ts) if ts else None, learnings=learnings)
+                    target_seconds=int(ts) if ts else None, learnings=learnings, brand=brand)
     beats = sb['beats']
     counts = {'scene': 0, 'board': 0, 'stat': 0}
     est_total = 0.0; est_cost = 0.0
