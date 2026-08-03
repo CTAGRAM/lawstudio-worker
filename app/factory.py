@@ -532,6 +532,64 @@ def _beat_plan(kind, brand_name, style):
                 'how': 'figure + label, gentle push-in, VO'}
     return {'makes': kind, 'uses': '', 'how': ''}
 
+def _best_set(still, sets):
+    """Match a shot to a locked set by word overlap when the plan didn't name one."""
+    words = set(w for w in still.lower().split() if len(w) > 3)
+    best, score = None, 0
+    for k, v in sets.items():
+        hit = len(words & set(w for w in (v['name'] + ' ' + v['desc']).lower().split() if len(w) > 3))
+        if hit > score: best, score = k, hit
+    return best
+
+def _build_location_bible(vid, style, beats, pk):
+    """Lock the SETS as well as the cast.
+
+    Locking characters stopped the people changing, but every shot still invented
+    a new bus, so an episode looked like five different buses. Each recurring
+    location gets ONE reference image, and every shot set there is conditioned on
+    it — same vehicle, same room, same geography.
+    """
+    import base64
+    digest = [{'still': (b.get('still') or '')[:200]} for b in beats if b.get('kind', 'scene') == 'scene']
+    if not digest:
+        return {}
+    try:
+        out = json.loads(lib.text_gen(
+            "These are the shots of one animated episode. List the DISTINCT physical locations used.\n"
+            f"{json.dumps(digest)}\n\n"
+            "Merge shots that happen in the same place into one location. For each, write a precise "
+            "description of the SET itself — architecture, layout, colours, materials, furniture and where "
+            "things sit relative to each other — detailed enough that every shot filmed there matches. "
+            "Describe no people.\n"
+            'Return ONLY JSON: {"locations":[{"name":"...","description":"..."}]}'))
+    except Exception as e:
+        print(f'  location bible failed: {str(e)[:120]}', flush=True)
+        return {}
+
+    locs = {}
+    for c in (out.get('locations') or [])[:4]:
+        nm, desc = (c.get('name') or '').strip(), (c.get('description') or '').strip()
+        if not nm or not desc: continue
+        key = 'l_' + ''.join(ch for ch in nm.lower() if ch.isalnum())[:16]
+        try:
+            prompt = (f"{pk.get('look_prompt','')}\n\nWide establishing view of an EMPTY set with no people in "
+                      f"it: {desc}. Show the whole space clearly so its layout is unmistakable. "
+                      f"No text, letters, numbers, logos or watermarks.")
+            d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
+                          {'contents': [{'parts': [{'text': prompt}]}],
+                           'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
+            img = next(base64.b64decode(x['inlineData']['data'])
+                       for x in d['candidates'][0]['content']['parts'] if 'inlineData' in x)
+            ref = RUNS / vid / 'sets'; ref.mkdir(parents=True, exist_ok=True)
+            fp = ref / f'{key}.png'; fp.write_bytes(img)
+            a = supa.upload_asset(str(fp), 'graphic', title=f'SET {nm} ({style})', tags=['set', style], style=style)
+            locs[key] = {'name': nm, 'desc': desc, 'ref_url': supa.public_url(a['storage_path'])}
+            print(f'  set locked: {nm}', flush=True)
+        except Exception as e:
+            print(f'  set ref failed for {nm}: {str(e)[:100]}', flush=True)
+    return locs
+
+
 def _build_cast_bible(vid, style, beats, pk):
     """Lock the story's characters before anything is rendered.
 
@@ -617,6 +675,8 @@ def plan_video(job):
     style_has_cast = any((c.get('style') or style) == style for c in _db_characters())
     bible = {} if style_has_cast else _build_cast_bible(vid, style, beats, pk_plan)
     name_to_key = {v['name'].lower(): k for k, v in bible.items()}
+    sets = _build_location_bible(vid, style, beats, pk_plan) if pk_plan.get('lock_sets') else {}
+    set_names = {v['name'].lower(): k for k, v in sets.items()}
     counts = {'scene': 0, 'board': 0, 'stat': 0}
     est_total = 0.0; est_cost = 0.0
     for i, b in enumerate(beats):
@@ -636,6 +696,9 @@ def plan_video(job):
             meta['cast'] = list(dict.fromkeys(keys)) or list(bible)[:2]
             spk = str(b.get('speaker') or '').lower()
             if spk in name_to_key: meta['speaker'] = name_to_key[spk]
+        if sets and kind == 'scene':
+            want = str(b.get('location') or '').lower()
+            meta['location'] = set_names.get(want) or _best_set(b.get('still') or '', sets)
         # a series pins its cast, so every episode uses the same characters
         if series_cast and kind == 'scene':
             meta['cast'] = [c for c in (meta.get('cast') or []) if c in series_cast] or list(series_cast)
@@ -644,7 +707,7 @@ def plan_video(job):
             'video_id': vid, 'idx': i, 'kind': kind, 'vo_text': b['vo'],
             'scene_prompt': b.get('still') or b.get('scene', ''), 'motion_prompt': b.get('motion', ''),
             'dur_s': round(dur + 0.6, 2), 'status': 'planned', 'meta': meta})
-    plan = {'cast': {'custom': bible} if bible else {},
+    plan = {'cast': {'custom': bible} if bible else {}, 'sets': sets,
             'title': sb.get('title'), 'style': style, 'brand': brand_name,
             'scenes': counts.get('scene', 0), 'boards': counts.get('board', 0), 'stats': counts.get('stat', 0),
             'beats': len(beats), 'est_seconds': round(est_total, 1), 'est_cost': round(est_cost, 2),
@@ -726,7 +789,20 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
         if not cast_refs: cast_refs = _style_refs(style)
         parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in cast_refs]
         extra = (" Featured character(s): " + cast_desc + ".") if cast_desc else ""
-        parts.append({'text': pk.get('look_prompt', '') + extra + "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')})
+        # the locked set goes in as a reference as well — same vehicle, same room,
+        # same layout in every shot filmed there
+        set_note = ""
+        lk = (b.get('meta') or {}).get('location')
+        sets = (v.get('progress') or {}).get('sets') or {}
+        if lk and lk in sets:
+            simg = _fetch_ref(sets[lk].get('ref_url') or '')
+            if simg:
+                parts.append({'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(simg).decode()}})
+                set_note = (f" The final reference image is THE SET: this shot takes place in that exact "
+                            f"{sets[lk]['name']} — match its layout, colours and materials precisely, and keep "
+                            f"the geography consistent (things stay where they are).")
+        parts.append({'text': pk.get('look_prompt', '') + extra + set_note +
+                      "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')})
         d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
                       {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
         img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
