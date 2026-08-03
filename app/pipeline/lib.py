@@ -163,9 +163,9 @@ def veo_i2v(still_png_bytes, motion_prompt, model='veo-3.1-fast-generate-preview
             return vd
     raise RuntimeError('veo: timeout')
 
-def tts(text, outfile, voice=None):
+def tts(text, outfile, voice=None, style=None):
     voice = voice or BRAND['voice']
-    style = "Read in a calm, warm, professional British explainer voice, clear, measured and reassuring: "
+    style = style or "Read in a calm, warm, professional British explainer voice, clear, measured and reassuring: "
     d = _post(f'{BASE}/models/gemini-2.5-pro-preview-tts:generateContent',
               {'contents':[{'parts':[{'text':style+text}]}],
                'generationConfig':{'responseModalities':['AUDIO'],

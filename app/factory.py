@@ -14,9 +14,12 @@ def _asset(name, mac_default):
 RUNS = Path(_os.environ.get('RUNS_DIR', '/Users/rudra/OpenMontage/runs')); RUNS.mkdir(parents=True, exist_ok=True)
 FONTS_DIR = _os.environ.get('FONTS_DIR', '/Users/rudra/Library/Fonts')
 CHECK_FONT = _os.environ.get('CHECK_FONT', '/System/Library/Fonts/Menlo.ttc')
+_KIDS_A = '/Users/rudra/OpenMontage/worker-deploy/app/assets'
 STYLE_REFS = {
     'vyond': [_asset('f13.png', '/Users/rudra/OpenMontage/projects/omni-i2v/frames/f13.png'),
               _asset('sp_05.png', '/Users/rudra/OpenMontage/projects/omni-i2v/frames/sp_05.png')],
+    'kids': [_asset('kids_maya.png', f'{_KIDS_A}/kids_maya.png'),
+             _asset('kids_pip.png', f'{_KIDS_A}/kids_pip.png')],
 }
 VYOND_STYLE = ("Flat 2D vector explainer cartoon in EXACTLY the style of the reference images: warm flat colors, "
     "simple geometric shapes, minimal facial features, soft shadows, clean uncluttered rooms. "
@@ -27,6 +30,11 @@ VOX_STYLE = ("Vox-style editorial paper collage animation, 16:9. {bg} covered in
     "light film grain, soft vignette. Cutout elements with torn paper edges and thin white borders, "
     "black-and-white halftone photo fragments, hand-drawn black ink accents. Smooth slow camera drift. "
     "Absolutely no text, no letters, no numbers, no logos, no watermarks anywhere.")
+KIDS_STYLE = ("Bright, friendly flat-2D vector cartoon for a children's educational video, in EXACTLY the style of "
+    "the reference images: clean rounded shapes, thick smooth outlines, warm cheerful palette (sunny yellow, sky "
+    "blue, coral, mint), soft simple shading, wholesome and polished. Use the reference characters exactly as "
+    "shown — do not redesign them. Wide 16:9, simple uncluttered kid-friendly settings (sunny classroom, cozy "
+    "home, outdoors, space). Big expressive happy faces. No text, letters, numbers, logos or watermarks anywhere.")
 
 CHARACTERS = {
     'main':   {'name': 'Main (glasses, blue tee)', 'refs': [_asset('f13.png','/Users/rudra/OpenMontage/projects/omni-i2v/frames/f13.png'), _asset('sp_05.png','/Users/rudra/OpenMontage/projects/omni-i2v/frames/sp_05.png')], 'desc': 'a man with round glasses and a light blue t-shirt'},
@@ -34,13 +42,17 @@ CHARACTERS = {
     'lawyer': {'name': 'Senior Lawyer', 'refs': [_asset('sl_ref.png','/Users/rudra/OpenMontage/remotion-composer/public/golegal-assets/sun/sl_ref.png')], 'desc': 'a senior lawyer in a bow tie'},
     'amara':  {'name': 'Amara (adviser)', 'refs': [_asset('aw_ref.png','/Users/rudra/OpenMontage/remotion-composer/public/golegal-assets/sun/aw_ref.png')], 'desc': 'a female adviser'},
     'ben':    {'name': 'Ben (manager)', 'refs': [_asset('bs_ref.png','/Users/rudra/OpenMontage/remotion-composer/public/golegal-assets/sun/bs_ref.png')], 'desc': 'an older male manager'},
+    # kids-education cast
+    'maya': {'name': 'Maya (kid)', 'refs': [_asset('kids_maya.png', f'{_KIDS_A}/kids_maya.png')], 'desc': 'Maya, a curious 8-year-old girl with dark curly puffs, round glasses and yellow dungarees'},
+    'leo':  {'name': 'Leo (kid)', 'refs': [_asset('kids_leo.png', f'{_KIDS_A}/kids_leo.png')], 'desc': 'Leo, a cheerful 7-year-old boy in a red hoodie and blue shorts'},
+    'pip':  {'name': 'Professor Pip (owl)', 'refs': [_asset('kids_pip.png', f'{_KIDS_A}/kids_pip.png')], 'desc': 'Professor Pip, a friendly owl mascot guide with a graduation cap'},
 }
 
-def _cast_for_beat(beat, video_cast):
+def _cast_for_beat(beat, video_cast, style='vyond'):
     """Return (ref_bytes_list, descriptor_text) for a scene beat honoring its chosen cast."""
     import base64 as _b
     keys = (beat.get('meta') or {}).get('cast')
-    if not keys: keys = ['main']
+    if not keys: keys = ['pip'] if style == 'kids' else ['main']
     refs, descs = [], []
     custom = (video_cast or {}).get('custom', {})   # {key: {name, desc}}
     for k in keys:
@@ -97,6 +109,22 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
                  "a whiteboard-style build that visualises the vo.\n"
                  "kind 'stat' additionally: stat {value (a short figure or phrase like '£12.21' or 'Age 21+'), label "
                  "(max 6 words)} — one big takeaway number/fact.")
+    elif style == 'kids':
+        guide = ("MIX the beat kinds like a great kids' educational episode (roughly 6 scenes, 2 boards, 1 stat for "
+                 "9 beats; never two graphic beats in a row; open with a hook question and close with a warm "
+                 "recap). Every beat has: id (b01_slug), kind, vo (1-2 spoken sentences of simple, warm, playful "
+                 "narration a 6-10 year old understands — short words, concrete examples, no jargon).\n"
+                 "kind 'scene' additionally: still (wide 16:9 bright flat-2D cartoon scene featuring the CAST — "
+                 "MAYA (girl, glasses, yellow dungarees), LEO (boy, red hoodie) and PROFESSOR PIP (friendly owl "
+                 "teacher) — in cheerful kid settings: sunny classroom, cozy home, garden, outer space; concrete "
+                 "props; STRICT RULE: describe absolutely NO text, writing, signs, labels or lettering — all "
+                 "on-screen words come from a separate graphics layer), "
+                 "motion (gentle playful flat-2D animation directions, static camera), "
+                 "cast (array naming which of 'maya','leo','pip' appear).\n"
+                 "kind 'board' additionally: board {title (max 4 words), bullets (3-5 short items, max 4 words "
+                 "each)} — a colourful pin-board that visualises the vo.\n"
+                 "kind 'stat' additionally: stat {value (a short fun figure like '8 legs' or '365 days'), label "
+                 "(max 6 words)} — one big memorable fact.")
     else:
         guide = ("Each beat: id, kind 'scene', vo (energetic editorial narration), "
                  "scene (a paper-collage visual metaphor: cutout photos, banknotes, crowds, arrows, charts — no characters needed), "
@@ -233,9 +261,19 @@ def _est_secs(vo):
     words = len((vo or '').split())
     return round(words / 2.6 + 0.6, 1)
 
+KIDS_VOICE_STYLE = ("Read in a bright, warm, friendly storyteller voice for young children — playful and "
+                    "encouraging, clear and unhurried, with gentle excitement: ")
+
+def _voice_for(style):
+    """TTS kwargs per style: kids gets a warmer, playful delivery."""
+    if style == 'kids':
+        return {'voice': 'Kore', 'style': KIDS_VOICE_STYLE}
+    return {'voice': 'Charon'}
+
 def _beat_plan(kind, brand_name, style):
     if kind == 'scene':
-        who = 'the locked cast character' if style == 'vyond' else 'paper-collage cut-outs'
+        who = ('Maya, Leo & Professor Pip (locked kids cast)' if style == 'kids'
+               else 'the locked cast character' if style == 'vyond' else 'paper-collage cut-outs')
         return {'makes': 'AI-generated animated scene', 'uses': f'{who} + {style} style refs',
                 'how': 'nano-banana still → Omni image-to-video, VO + burned captions'}
     if kind == 'board':
@@ -312,7 +350,7 @@ def generate_video(job):
         supa.update('video_beats', bid, {'status': 'pending'})
         try:
             wav = wd/'audio'/f'{i:02d}.wav'
-            if not wav.exists(): lib.tts(b['vo_text'], str(wav), voice='Charon')
+            if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style))
             vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
             still_path = wd/'stills'/f'{i:02d}.png'
             if kind in ('board', 'stat'):
@@ -323,13 +361,14 @@ def generate_video(job):
                 ca = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i} {kind}', tags=[kind, style], style=style, duration_s=d_beat)
                 supa.update('video_beats', bid, {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': d_beat, 'still_asset': sa['id'], 'clip_asset': ca['id']})
                 continue
-            if style == 'vyond':
+            if style in ('vyond', 'kids'):
                 import base64
-                cast_refs, cast_desc = _cast_for_beat(b, video_cast)
+                cast_refs, cast_desc = _cast_for_beat(b, video_cast, style)
                 if not cast_refs: cast_refs = [Path(p).read_bytes() for p in STYLE_REFS.get(style, [])]
                 parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in cast_refs]
                 extra = (" Featured character(s): " + cast_desc + ".") if cast_desc else ""
-                parts.append({'text': VYOND_STYLE + extra + "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')})
+                base_style = KIDS_STYLE if style == 'kids' else VYOND_STYLE
+                parts.append({'text': base_style + extra + "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')})
                 d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
                               {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
                 img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
@@ -390,7 +429,7 @@ def produce_video(job):
         try:
             wav = wd/'audio'/f'{i:02d}.wav'
             if not wav.exists():
-                lib.tts(b['vo'], str(wav), voice='Charon')
+                lib.tts(b['vo'], str(wav), **_voice_for(style))
             vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
             still_path = wd/'stills'/f'{i:02d}.png'
             kind = b.get('kind', 'scene')
@@ -571,11 +610,13 @@ def reroll_beat(payload):
         supa.update('video_beats', bid, {'status': 'done', 'still_asset': sa['id'], 'clip_asset': ca['id'], 'meta': meta})
         return f'rerolled {kind} beat {i}'
     scene = b['scene_prompt'] + (f"\nADJUSTMENT: {note}" if note else '')
-    if style == 'vyond':
+    if style in ('vyond', 'kids'):
         import base64
-        refs = [Path(p).read_bytes() for p in STYLE_REFS['vyond']]
+        cast_refs, cast_desc = _cast_for_beat(b, {}, style)
+        refs = cast_refs or [Path(p).read_bytes() for p in STYLE_REFS.get(style, STYLE_REFS['vyond'])]
         parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in refs]
-        parts.append({'text': VYOND_STYLE + "\n\nScene (wide 16:9): " + scene})
+        extra = (" Featured character(s): " + cast_desc + ".") if cast_desc else ""
+        parts.append({'text': (KIDS_STYLE if style == 'kids' else VYOND_STYLE) + extra + "\n\nScene (wide 16:9): " + scene})
         d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
                       {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
         img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
@@ -623,7 +664,7 @@ def edit_video(job):
         elif op['op'] == 'update_vo':
             wd = RUNS / vid; (wd/'audio').mkdir(parents=True, exist_ok=True)
             wav = wd/'audio'/f"{b['idx']:02d}.wav"
-            lib.tts(op['new_text'], str(wav), voice='Charon')
+            lib.tts(op['new_text'], str(wav), **_voice_for(v.get('style')))
             va = supa.upload_asset(str(wav), 'vo', title=f'edit vo beat {b["idx"]}', tags=['edit'], duration_s=_dur(wav))
             supa.update('video_beats', b['id'], {'vo_text': op['new_text'], 'vo_asset': va['id'],
                                                  'dur_s': round(_dur(wav) + 0.6, 2)})
