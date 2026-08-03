@@ -794,6 +794,16 @@ def _fetch_asset(asset_id, dest):
             for c in r.iter_content(1 << 16): f.write(c)
     return dest
 
+def _clip_fps(path):
+    try:
+        r = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                            '-show_entries', 'stream=r_frame_rate', '-of', 'csv=p=0', str(path)],
+                           capture_output=True, text=True).stdout.strip()
+        n, d = (r.split('/') + ['1'])[:2]
+        return float(n) / float(d or 1)
+    except Exception:
+        return 0.0
+
 def assemble_video(video_id):
     # flip the row to 'rendering' straight away so the dashboard reflects it even
     # if the click-time update was missed
@@ -804,6 +814,7 @@ def assemble_video(video_id):
     beats = [b for b in beats if b['status'] == 'done']
     wd = RUNS / video_id; segs = wd/'segs'
     for d in (segs, wd/'clips', wd/'audio', wd/'stills'): d.mkdir(parents=True, exist_ok=True)
+    FPS = int(style_pack(v.get('style')).get('output_fps') or 24)
     brand = supa.select('brands', id=f"eq.{v['brand_id']}")[0] if v.get('brand_id') else None
 
     order = []
@@ -811,7 +822,7 @@ def assemble_video(video_id):
         ip = wd/'intro.mp4'
         if not ip.exists(): _fetch_asset(brand['intro_asset'], ip)
         out = segs/'intro.mp4'
-        _run(['ffmpeg','-nostdin','-y','-i',str(ip),'-vf','scale=1920:1080:flags=lanczos,fps=30,format=yuv420p',
+        _run(['ffmpeg','-nostdin','-y','-i',str(ip),'-vf',f'scale=1920:1080:flags=lanczos,fps={FPS},format=yuv420p',
               '-an','-c:v','libx264','-crf','18',str(out)])
         order.append(out)
     intro_d = _dur(order[0]) if order else 0.0
@@ -824,11 +835,11 @@ def assemble_video(video_id):
         d = float(b['dur_s']); sd = _dur(src) - trim
         out = segs/f"{b['idx']:02d}.mp4"
         if sd >= d:
-            vf = f"trim={trim}:{trim+d},setpts=PTS-STARTPTS,scale=1920:1080:flags=lanczos,unsharp=3:3:0.35,fps=30,format=yuv420p"
+            vf = f"trim={trim}:{trim+d},setpts=PTS-STARTPTS,scale=1920:1080:flags=lanczos,unsharp=3:3:0.35,fps={FPS},format=yuv420p"
         else:
             factor = min(d/max(sd, 0.1), 1.5); hold = max(0.0, d - sd*factor)
             vf = (f"trim={trim},setpts=(PTS-STARTPTS)*{factor:.4f},scale=1920:1080:flags=lanczos,unsharp=3:3:0.35,"
-                  f"tpad=stop_mode=clone:stop_duration={hold:.2f},trim=0:{d},fps=30,format=yuv420p")
+                  f"tpad=stop_mode=clone:stop_duration={hold:.2f},trim=0:{d},fps={FPS},format=yuv420p")
         _run(['ffmpeg','-nostdin','-y','-i',str(src),'-vf',vf,'-an','-c:v','libx264','-crf','18',str(out)])
         b['start'] = t; t += d
         order.append(out)
@@ -837,7 +848,7 @@ def assemble_video(video_id):
         op = wd/'outro.mp4'
         if not op.exists(): _fetch_asset(brand['outro_asset'], op)
         out = segs/'zz_outro.mp4'
-        _run(['ffmpeg','-nostdin','-y','-i',str(op),'-vf','scale=1920:1080:flags=lanczos,fps=30,format=yuv420p',
+        _run(['ffmpeg','-nostdin','-y','-i',str(op),'-vf',f'scale=1920:1080:flags=lanczos,fps={FPS},format=yuv420p',
               '-an','-c:v','libx264','-crf','18',str(out)])
         order.append(out); t += _dur(out)
     total = t
