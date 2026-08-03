@@ -218,10 +218,13 @@ def render_board(spec, palette, still_png, out_mp4, dur):
     d = ImageDraw.Draw(base)
     title = str(spec.get('title', ''))
     tb = d.textbbox((0, 0), title, font=ft)
-    d.text(((1920 - tb[2]) // 2, 120), title, font=ft, fill=(255, 255, 255))
     bullets = [str(b) for b in (spec.get('bullets') or [])[:5]]
     y0 = 320 if len(bullets) >= 4 else 380
     step = 132
+    # centre the title+rows block vertically instead of letting it ride high
+    dy = max(0, (1080 - ((y0 + max(len(bullets) - 1, 0) * step + 52) - 120)) // 2 - 120)
+    y0 += dy
+    d.text(((1920 - tb[2]) // 2, 120 + dy), title, font=ft, fill=(255, 255, 255))
     tmp = _P(still_png).parent
     rows = []
     for i, btxt in enumerate(bullets):
@@ -236,23 +239,41 @@ def render_board(spec, palette, still_png, out_mp4, dur):
     for rp in rows:
         comp.alpha_composite(Image.open(rp)) if comp.mode == 'RGBA' else comp.paste(Image.open(rp), (0, 0), Image.open(rp))
     comp.convert('RGB').save(still_png)
-    cmd = ['ffmpeg', '-nostdin', '-y', '-f', 'lavfi', '-i', f'color=c=0x%02x%02x%02x:s=1920x1080:d={dur}:r=30' % navy]
-    # draw title on the color base via overlaying a title-only png
-    tpng = tmp / '_title.png'
-    timg = Image.new('RGBA', (1920, 1080), (0, 0, 0, 0))
-    td = ImageDraw.Draw(timg)
-    td.text(((1920 - tb[2]) // 2, 120), title, font=ft, fill=(255, 255, 255, 255))
-    timg.save(tpng)
-    cmd += ['-loop', '1', '-i', str(tpng)]
-    for rp in rows: cmd += ['-loop', '1', '-i', rp]
-    fc = ['[0][1]overlay=0:0[v0]']
-    for i in range(len(rows)):
-        at = 0.6 + (dur * 0.55) * i / max(len(rows), 1)
-        fc.append(f'[{i+2}]format=rgba,fade=t=in:st={at:.2f}:d=0.35:alpha=1[r{i}]')
-        fc.append(f'[v{i}][r{i}]overlay=0:0[v{i+1}]')
-    cmd += ['-filter_complex', ';'.join(fc), '-map', f'[v{len(rows)}]',
-            '-t', str(dur), '-r', '30', '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p', str(out_mp4)]
-    r = __import__('subprocess').run(cmd, capture_output=True, text=True)
+    # Composite the reveal in PIL and encode from a concat list of stills.
+    # (Chaining N full-HD -loop inputs through overlay filters made ffmpeg get
+    # OOM-killed on the 1GB worker — it died right after opening the encoder.)
+    state = base.copy()          # navy + title already drawn on `base`
+    steps = []                   # (png_path, seconds_to_hold)
+    lead = 0.6
+    per = max(0.35, (dur - lead) / max(len(rows), 1))
+    p0 = tmp / '_b_state0.png'; state.convert('RGB').save(p0)
+    steps.append((p0, lead))
+    for i, rp in enumerate(rows):
+        row = Image.open(rp).convert('RGBA')
+        # 3-frame alpha fade so the row eases in rather than popping
+        for k, a in enumerate((0.4, 0.75, 1.0)):
+            frame = state.copy().convert('RGBA')
+            if a < 1.0:
+                faded = row.copy()
+                faded.putalpha(row.getchannel('A').point(lambda v, a=a: int(v * a)))
+                frame.alpha_composite(faded)
+            else:
+                frame.alpha_composite(row)
+            fp = tmp / f'_b_r{i}_{k}.png'; frame.convert('RGB').save(fp)
+            steps.append((fp, 0.06))
+        state = state.convert('RGBA'); state.alpha_composite(row)
+        hold = tmp / f'_b_hold{i}.png'; state.convert('RGB').save(hold)
+        steps.append((hold, max(0.1, per - 0.18)))
+
+    lst = tmp / '_board_concat.txt'
+    with open(lst, 'w') as f:
+        for p, d_ in steps:
+            f.write(f"file '{p}'\nduration {d_:.3f}\n")
+        f.write(f"file '{steps[-1][0]}'\n")   # concat needs the last frame repeated
+    r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-f', 'concat', '-safe', '0', '-i', str(lst),
+                        '-vf', 'fps=30,format=yuv420p', '-t', str(dur),
+                        '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', str(out_mp4)],
+                       capture_output=True, text=True)
     if r.returncode: raise RuntimeError('board render: ' + _ff_err(r.stderr))
 
 def render_stat(spec, palette, still_png, out_mp4, dur):
