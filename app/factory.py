@@ -60,14 +60,36 @@ STYLE_CAST = {
     'vyond': {'main', 'client', 'lawyer', 'amara', 'ben'},
 }
 
+_CHAR_CACHE = {'at': 0.0, 'rows': []}
+
+def _db_characters():
+    """User-created characters (name + description + one locked reference image)."""
+    if time.time() - _CHAR_CACHE['at'] > 60:
+        try:
+            _CHAR_CACHE['rows'] = supa.select('characters')
+            _CHAR_CACHE['at'] = time.time()
+        except Exception:
+            pass
+    return _CHAR_CACHE['rows'] or []
+
+def _fetch_ref(url):
+    try:
+        import requests
+        r = requests.get(url, timeout=60)
+        if r.ok: return r.content
+    except Exception:
+        pass
+    return None
+
 def _cast_for_beat(beat, video_cast, style='vyond'):
     """Return (ref_bytes_list, descriptor_text) for a scene beat honoring its chosen cast."""
-    import base64 as _b
+    db = {c['key']: c for c in _db_characters()
+          if not c.get('style') or not style or c.get('style') == style}
     keys = (beat.get('meta') or {}).get('cast')
     allowed = STYLE_CAST.get(style)
     if keys and allowed:
         custom_keys = set((video_cast or {}).get('custom', {}))
-        keys = [k for k in keys if k in allowed or k in custom_keys]
+        keys = [k for k in keys if k in allowed or k in custom_keys or k in db]
     if not keys: keys = ['pip'] if style == 'kids' else ['main']
     refs, descs = [], []
     custom = (video_cast or {}).get('custom', {})   # {key: {name, desc}}
@@ -77,6 +99,12 @@ def _cast_for_beat(beat, video_cast, style='vyond'):
                 try: refs.append(Path(rp).read_bytes())
                 except Exception: pass
             descs.append(CHARACTERS[k]['desc'])
+        elif k in db:
+            c = db[k]
+            if c.get('ref_url'):
+                img = _fetch_ref(c['ref_url'])
+                if img: refs.append(img)
+            descs.append(f"{c.get('name')}, {c.get('description') or ''}".strip(', '))
         elif k in custom:
             descs.append(custom[k].get('desc', ''))
     return refs, ('; '.join([d for d in descs if d]))
@@ -109,9 +137,16 @@ def fetch_article(url):
     txt = re.sub(r'\s+', ' ', txt).strip()
     return txt[:9000]
 
+LONG_FORM_S = 240      # above this we storyboard section by section
+SECTION_S = 120        # each chunk covers roughly this much screen time
+
 def storyboard(style, topic, script, article_url=None, target_seconds=None, learnings=None):
+    # long briefs can't come back as one JSON blob — outline first, then fill in
+    # each section, so a 25-minute video is just many small, reliable calls.
+    if target_seconds and target_seconds > LONG_FORM_S and not script:
+        return _storyboard_long(style, topic, article_url, int(target_seconds), learnings)
     auto = target_seconds is None
-    n_beats = None if auto else max(6, min(18, round(target_seconds / 9)))
+    n_beats = None if auto else max(3, min(30, round(target_seconds / 9)))
     if article_url:
         art = fetch_article(article_url)
         src = ("SOURCE ARTICLE (background research ONLY — write completely ORIGINAL narration in your own words; "
@@ -169,6 +204,32 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
               f"{profile['rules']} "
               'Return JSON: {"title": "...", "beats": [ ... ]}')
     return json.loads(lib.text_gen(prompt))
+
+def _storyboard_long(style, topic, article_url, target_seconds, learnings):
+    """Long form: outline the sections, then storyboard each one and stitch the
+    beats together. Keeps every model call small enough to be reliable."""
+    src = topic or ''
+    if article_url:
+        src = (fetch_article(article_url) + ("\n\nANGLE: " + topic if topic else ''))
+    n_sections = max(2, round(target_seconds / SECTION_S))
+    profile = DIRECTORS.get(style, DIRECTORS['vyond'])
+    outline = json.loads(lib.text_gen(
+        f"{profile['who']} Plan a {round(target_seconds/60)}-minute video on:\n{src}\n\n"
+        f"Break it into exactly {n_sections} sections that flow as one continuous video "
+        f"(a hook, then the substance in a logical build, then a close). {profile['rules']}\n"
+        'Return ONLY JSON: {"title": "...", "sections": [{"heading": "...", "covers": '
+        '"one sentence on exactly what this section explains"}]}'))
+    sections = (outline.get('sections') or [])[:n_sections]
+    beats, seen = [], 0
+    for i, sec in enumerate(sections):
+        part = storyboard(style, f"{sec.get('heading','')} — {sec.get('covers','')}", None,
+                          target_seconds=SECTION_S, learnings=learnings)
+        for b in (part.get('beats') or []):
+            b['id'] = f"s{i:02d}_{b.get('id', 'b')}"
+            beats.append(b)
+        seen += 1
+        print(f'  long-form: section {seen}/{len(sections)} -> {len(beats)} beats', flush=True)
+    return {'title': outline.get('title') or topic, 'beats': beats}
 
 BOARD_FONT_EB = _asset('Poppins-ExtraBold.ttf', '/Users/rudra/OpenMontage/remotion-composer/public/fonts/Poppins-ExtraBold.ttf')
 BOARD_FONT_SB = _asset('Poppins-SemiBold.ttf', '/Users/rudra/OpenMontage/remotion-composer/public/fonts/Poppins-SemiBold.ttf')
