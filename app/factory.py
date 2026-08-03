@@ -139,32 +139,39 @@ def _fetch_ref(url):
     return None
 
 def _cast_for_beat(beat, video_cast, style='vyond'):
-    """Return (ref_bytes_list, descriptor_text) for a scene beat honoring its chosen cast."""
+    """Return (ref_bytes_list, descriptor_text) for a scene beat.
+
+    A style may ONLY use characters registered to it (plus per-video custom ones
+    and any deliberately style-less character). This is the hard boundary that
+    stops one vertical's cast turning up in another's video — an unknown key is
+    dropped rather than silently resolved against the built-in roster.
+    """
     db = {c['key']: c for c in _db_characters()
-          if not c.get('style') or not style or c.get('style') == style}
-    keys = (beat.get('meta') or {}).get('cast')
-    # a style may only use characters that belong to it — this is what stops one
-    # vertical's cast appearing in another's video
-    allowed = STYLE_CAST.get(style) or set(db)
-    if keys and allowed:
-        custom_keys = set((video_cast or {}).get('custom', {}))
-        keys = [k for k in keys if k in allowed or k in custom_keys or k in db]
-    if not keys:
-        keys = list(style_pack(style).get('default_cast') or []) or (list(db)[:1])
-    refs, descs = [], []
+          if (c.get('style') or None) in (style, None)}
     custom = (video_cast or {}).get('custom', {})   # {key: {name, desc}}
+    allowed = set(db) | set(custom)
+
+    keys = [k for k in ((beat.get('meta') or {}).get('cast') or []) if k in allowed]
+    if not keys:
+        keys = [k for k in (style_pack(style).get('default_cast') or []) if k in allowed]
+    if not keys:
+        keys = list(db)[:1]
+
+    refs, descs = [], []
     for k in keys:
-        if k in CHARACTERS:
-            for rp in CHARACTERS[k]['refs']:
-                try: refs.append(Path(rp).read_bytes())
+        c = db.get(k)
+        if c:
+            # built-ins ship their references on disk; everything else is fetched
+            local = CHARACTERS.get(k, {}).get('refs') if k in CHARACTERS else None
+            got = False
+            for rp in (local or []):
+                try: refs.append(Path(rp).read_bytes()); got = True
                 except Exception: pass
-            descs.append(CHARACTERS[k]['desc'])
-        elif k in db:
-            c = db[k]
-            if c.get('ref_url'):
+            if not got and c.get('ref_url'):
                 img = _fetch_ref(c['ref_url'])
                 if img: refs.append(img)
-            descs.append(f"{c.get('name')}, {c.get('description') or ''}".strip(', '))
+            nm, desc = (c.get('name') or ''), (c.get('description') or '')
+            descs.append(desc if desc.lower().startswith(nm.lower()) else f'{nm}, {desc}'.strip(', '))
         elif k in custom:
             descs.append(custom[k].get('desc', ''))
     return refs, ('; '.join([d for d in descs if d]))
