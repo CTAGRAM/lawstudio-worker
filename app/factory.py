@@ -53,10 +53,21 @@ CHARACTERS = {
     'pip':  {'name': 'Professor Pip (owl)', 'refs': [_asset('kids_pip.png', f'{_KIDS_A}/kids_pip.png')], 'desc': 'Professor Pip, a friendly owl mascot guide with a graduation cap'},
 }
 
+# which roster each style may draw from — stops a kids run pulling the legal
+# cast (or vice-versa) into its scene references
+STYLE_CAST = {
+    'kids': {'maya', 'leo', 'pip'},
+    'vyond': {'main', 'client', 'lawyer', 'amara', 'ben'},
+}
+
 def _cast_for_beat(beat, video_cast, style='vyond'):
     """Return (ref_bytes_list, descriptor_text) for a scene beat honoring its chosen cast."""
     import base64 as _b
     keys = (beat.get('meta') or {}).get('cast')
+    allowed = STYLE_CAST.get(style)
+    if keys and allowed:
+        custom_keys = set((video_cast or {}).get('custom', {}))
+        keys = [k for k in keys if k in allowed or k in custom_keys]
     if not keys: keys = ['pip'] if style == 'kids' else ['main']
     refs, descs = [], []
     custom = (video_cast or {}).get('custom', {})   # {key: {name, desc}}
@@ -325,6 +336,20 @@ DIRECTORS = {
     },
 }
 
+def _now_iso():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+def _stage(vid, stage, **extra):
+    """Record which stage a run is in so the dashboard can show live progress."""
+    try:
+        v = supa.select('videos', id=f'eq.{vid}')[0]
+        prog = dict(v.get('progress') or {})
+        prog.update({'stage': stage, **extra})
+        supa.update('videos', vid, {'progress': prog})
+    except Exception:
+        pass
+
 def _motion_brief(style, motion_prompt):
     """Animation direction for the image-to-video pass. Legal explainers want calm,
     restrained motion; a kids channel needs characters that actually move."""
@@ -415,12 +440,15 @@ def generate_video(job):
     if v.get('brand_id'):
         try: palette = supa.select('brands', id=f"eq.{v['brand_id']}")[0].get('palette')
         except Exception: pass
-    supa.update('videos', vid, {'status': 'running'})
-    video_cast = (v.get('progress') or {}).get('cast') or {}
     beats = sorted(supa.select('video_beats', video_id=f'eq.{vid}'), key=lambda b: b['idx'])
     beats = [b for b in beats if b['status'] in ('planned', 'pending', 'failed')]
+    # stamp the start so the dashboard can show real elapsed time and an ETA
+    prog = dict(v.get('progress') or {})
+    prog.update({'stage': 'generating', 'gen_started_at': _now_iso(), 'gen_total': len(beats)})
+    supa.update('videos', vid, {'status': 'running', 'progress': prog})
+    video_cast = (v.get('progress') or {}).get('cast') or {}
     total_cost = 0.0
-    total_cost = 0.0
+    done_n = 0
     for b in beats:
         bid = b['id']; i = b['idx']
         supa.update('video_beats', bid, {'status': 'pending'})
@@ -438,6 +466,8 @@ def generate_video(job):
         if last_err is not None:
             supa.update('video_beats', bid, {'status': 'failed',
                         'meta': {**(b.get('meta') or {}), 'error': f'after {BEAT_TRIES} tries: {last_err}'[:600]}})
+        _stage(vid, 'generating', gen_done=done_n + 1, gen_total=len(beats)); done_n += 1
+    _stage(vid, 'awaiting_render')
     supa.update('videos', vid, {'status': 'review', 'total_cost': round(total_cost, 2)})
     return f'generated {len(beats)} beats, ${total_cost:.2f}'
 
@@ -575,6 +605,7 @@ def _fetch_asset(asset_id, dest):
     return dest
 
 def assemble_video(video_id):
+    _stage(video_id, 'assembling', assemble_started_at=_now_iso())
     v = supa.select('videos', id=f'eq.{video_id}')[0]
     beats = sorted(supa.select('video_beats', video_id=f'eq.{video_id}'), key=lambda b: b['idx'])
     beats = [b for b in beats if b['status'] == 'done']
@@ -671,6 +702,7 @@ def assemble_video(video_id):
 
     fa = supa.upload_asset(str(wd/'final.mp4'), 'video', title=v.get('title') or 'video',
                            tags=['final'], style=v['style'], brand_id=v.get('brand_id'), duration_s=total)
+    _stage(video_id, 'ready', finished_at=_now_iso())
     supa.update('videos', video_id, {'status': 'done', 'final_asset': fa['id'], 'duration_s': round(total, 1)})
     return f'assembled {total:.1f}s -> asset {fa["id"][:8]}'
 
