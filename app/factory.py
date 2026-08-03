@@ -479,11 +479,19 @@ def _motion_brief(style, motion_prompt, speaker=None):
                 "listens, reacting with small nods and expressions.")
     return keep + (motion_prompt or '') + ' ' + (style_pack(style).get('motion_prompt') or '') + talk
 
-def _voice_for(style):
-    """TTS voice + delivery for a style."""
+def _voice_for(style, speaker_key=None):
+    """TTS voice + delivery. A character with their own voice speaks in it, so a
+    scene reads as dialogue rather than one narrator reading every part; the
+    style's voice is the narrator and the fallback."""
     pk = style_pack(style)
     out = {'voice': pk.get('voice_name') or 'Charon'}
     if pk.get('voice_style'): out['style'] = pk['voice_style']
+    if speaker_key:
+        for c in _db_characters():
+            if c.get('key') == speaker_key and (c.get('style') or style) == style:
+                if c.get('voice_name'): out['voice'] = c['voice_name']
+                if c.get('voice_style'): out['style'] = c['voice_style']
+                break
     return out
 
 def _beat_plan(kind, brand_name, style):
@@ -607,7 +615,8 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
     bid = b['id']; i = b['idx']; kind = b['kind']
     cost = 0.0
     wav = wd/'audio'/f'{i:02d}.wav'
-    if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style))
+    speaker_key = (b.get('meta') or {}).get('speaker')
+    if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key))
     vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
     still_path = wd/'stills'/f'{i:02d}.png'
     if kind in ('board', 'stat'):
@@ -635,6 +644,22 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
         clip = lib.omni_video(_look_for_beat(pk, b) + "\n\nScene: " + (b['scene_prompt'] or '')); img = None
     cost += 1.05
     clip_path = wd/'clips'/f'{i:02d}.mp4'; clip_path.write_bytes(clip)
+
+    # optional lip sync: match the speaking character's mouth to their line
+    if pk.get('lip_sync') and speaker_key:
+        try:
+            from pipeline import lipsync
+            raw = supa.upload_asset(str(clip_path), 'clip', title=f'{vid[:8]} beat{i} pre-sync',
+                                    tags=['raw', style], style=style)
+            synced = lipsync.sync(supa.public_url(raw['storage_path']),
+                                  supa.public_url(vo_asset['storage_path']))
+            clip_path.write_bytes(synced)
+            cost += 0.30
+            print(f'  beat {i}: lip synced', flush=True)
+        except Exception as e:
+            # never fail a beat over lip sync — keep the un-synced clip
+            print(f'  beat {i}: lip sync skipped ({str(e)[:120]})', flush=True)
+
     patch = {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': round(_dur(wav) + 0.6, 2)}
     if img:
         sa = supa.upload_asset(str(still_path), 'still', title=f'{vid[:8]} beat{i}', tags=['auto', style], style=style, cost=0.14)
@@ -787,7 +812,8 @@ def reroll_beat(payload):
         if not b.get('vo_asset') and b.get('vo_text'):
             (wd/'audio').mkdir(parents=True, exist_ok=True)
             wav = wd/'audio'/f'{i:02d}.wav'
-            if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style))
+            if not wav.exists():
+                lib.tts(b['vo_text'], str(wav), **_voice_for(style, (b.get('meta') or {}).get('speaker')))
             va = supa.upload_asset(str(wav), 'vo', title=f'reroll beat{i} vo', tags=['vo'], duration_s=_dur(wav))
             patch['vo_asset'] = va['id']
             b['dur_s'] = round(_dur(wav) + 0.6, 2); patch['dur_s'] = b['dur_s']
