@@ -71,6 +71,11 @@ def _dispatch(job):
         else:
             msg = factory.reroll_beat(job.get('payload') or {})
         supa.update_job(job['id'], {'status': 'done', 'log': msg})
+    elif jtype == 'snippets':
+        import factory
+        supa.update_job(job['id'], {'status': 'running'})
+        msg = factory.snippets(job)
+        supa.update_job(job['id'], {'status': 'done', 'log': msg})
     elif jtype == 'youtube_publish':
         from pipeline import youtube
         supa.update_job(job['id'], {'status': 'running'})

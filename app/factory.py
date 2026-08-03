@@ -71,7 +71,7 @@ def fetch_article(url):
     txt = re.sub(r'\s+', ' ', txt).strip()
     return txt[:9000]
 
-def storyboard(style, topic, script, article_url=None, target_seconds=None):
+def storyboard(style, topic, script, article_url=None, target_seconds=None, learnings=None):
     auto = target_seconds is None
     n_beats = None if auto else max(6, min(18, round(target_seconds / 9)))
     if article_url:
@@ -105,8 +105,10 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None):
              "short, a rich topic runs longer; do not pad or truncate."
              if auto else
              f"Around {n_beats} beats (use fewer/more only if genuinely needed), ~{target_seconds}s spoken.")
+    learn = (f"\n\nLEARNINGS FROM PAST PERFORMANCE (apply these to improve reach/engagement):\n{learnings}\n"
+             if learnings else "")
     prompt = (f"You are the director of a UK legal-explainer video studio. Write a storyboard as JSON.\n{src}\n\n"
-              f"Style: {style}. {scope} {guide}\n"
+              f"Style: {style}. {scope} {guide}{learn}\n"
               'Accurate UK employment/legal content, qualitative framing (no invented statistics). '
               'Return JSON: {"title": "...", "beats": [ ... ]}')
     return json.loads(lib.text_gen(prompt))
@@ -256,9 +258,16 @@ def plan_video(job):
         except Exception: pass
     supa._rest('DELETE', 'video_beats', params={'video_id': f'eq.{vid}'})
     ts = payload.get('target_seconds')
+    learnings = None
+    try:
+        g = supa.select('growth', order='created_at.desc', limit='1')
+        if g and g[0].get('guidelines'):
+            learnings = "\n".join(f"- {x}" for x in g[0]['guidelines'])
+    except Exception:
+        learnings = None
     sb = storyboard(style, payload.get('topic'), payload.get('script'),
                     article_url=payload.get('article_url'),
-                    target_seconds=int(ts) if ts else None)
+                    target_seconds=int(ts) if ts else None, learnings=learnings)
     beats = sb['beats']
     counts = {'scene': 0, 'board': 0, 'stat': 0}
     est_total = 0.0; est_cost = 0.0
@@ -624,3 +633,74 @@ def edit_video(job):
             done.append(f"rerolled beat {b['idx']}")
     msg = assemble_video(vid)
     return f"{plan.get('summary', 'edited')} [{', '.join(done)}] -> {msg}"
+
+
+def snippets(job):
+    """Auto-cut vertical (9:16) Shorts from a finished video's best moments.
+    AI picks contiguous beat ranges; each becomes a short video row (kind='short')
+    reusing final_asset, so it publishes through the normal YouTube flow."""
+    payload = job.get('payload') or {}
+    vid = payload.get('video_id') or job.get('video_id')
+    v = supa.select('videos', id=f'eq.{vid}')[0]
+    if not v.get('final_asset'):
+        raise RuntimeError('source video has no final render')
+    beats = sorted(supa.select('video_beats', video_id=f'eq.{vid}'), key=lambda b: b['idx'])
+    beats = [b for b in beats if b['status'] == 'done']
+    if not beats:
+        raise RuntimeError('no beats to snip')
+    wd = RUNS / vid / 'shorts'; wd.mkdir(parents=True, exist_ok=True)
+
+    # recompute each beat's start time exactly like assemble_video (intro offset + cumulative)
+    intro_d = 0.0
+    brand = supa.select('brands', id=f"eq.{v['brand_id']}")[0] if v.get('brand_id') else None
+    if brand and brand.get('intro_asset'):
+        ip = RUNS / vid / 'intro.mp4'
+        try:
+            if not ip.exists(): _fetch_asset(brand['intro_asset'], ip)
+            intro_d = _dur(ip)
+        except Exception: intro_d = 0.0
+    t = intro_d
+    for b in beats:
+        b['_start'] = t; t += float(b['dur_s'])
+
+    lines = "\n".join(f"{i}: ({b['dur_s']}s) {b['vo_text']}" for i, b in enumerate(beats))
+    prompt = (f'These are the ordered beats of a finished UK legal explainer titled "{v.get("title")}". '
+              "Pick 2-4 self-contained vertical SHORTS. Each short is a CONTIGUOUS run of beats (by index) that "
+              "stands alone as a 15-45 second clip with a strong hook. One punchy point per short.\n"
+              f"Beats:\n{lines}\n\n"
+              'Return ONLY JSON: {"shorts":[{"start_idx":int,"end_idx":int,"title":"punchy <=80 char title",'
+              '"caption":"one-line hook"}]}')
+    shorts = (json.loads(lib.text_gen(prompt)).get('shorts') or [])[:4]
+
+    final = RUNS / vid / 'final.mp4'
+    if not final.exists(): _fetch_asset(v['final_asset'], final)
+
+    made = 0
+    for k, s in enumerate(shorts):
+        try:
+            si = max(0, int(s['start_idx'])); ei = min(len(beats) - 1, int(s['end_idx']))
+            if ei < si: si, ei = ei, si
+            seg_start = beats[si]['_start']
+            seg_end = min(beats[ei]['_start'] + float(beats[ei]['dur_s']), seg_start + 60)
+            dur = round(seg_end - seg_start, 2)
+            if dur < 5: continue
+            out = wd / f'short_{k:02d}.mp4'
+            vf = ("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=25[bg];"
+                  "[0:v]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]")
+            r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-ss', f'{seg_start:.2f}', '-i', str(final),
+                                '-t', f'{dur:.2f}', '-filter_complex', vf, '-map', '[v]', '-map', '0:a?',
+                                '-c:v', 'libx264', '-crf', '20', '-c:a', 'aac', '-b:a', '160k',
+                                '-movflags', '+faststart', str(out)], capture_output=True, text=True)
+            if r.returncode: continue
+            fa = supa.upload_asset(str(out), 'clip', title=(s.get('title') or f'Short {k+1}')[:120],
+                                   tags=['short', v['style']], style=v['style'], brand_id=v.get('brand_id'), duration_s=dur)
+            supa.insert('videos', {'title': (s.get('title') or f'Short {k+1}')[:120],
+                                   'topic': s.get('caption') or v.get('title'), 'style': v['style'],
+                                   'brand_id': v.get('brand_id'), 'kind': 'short', 'status': 'done',
+                                   'final_asset': fa['id'], 'duration_s': dur,
+                                   'progress': {'short_of': vid, 'caption': s.get('caption')}})
+            made += 1
+        except Exception:
+            continue
+    supa.update('videos', vid, {'progress': {**(v.get('progress') or {}), 'shorts_made': made}})
+    return f'made {made} shorts from {vid[:8]}'
