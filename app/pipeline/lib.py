@@ -150,10 +150,16 @@ def omni_video(prompt):
 class VeoFiltered(Exception):
     """Veo returned no video (RAI safety filter or empty samples)."""
 
-def veo_i2v(still_png_bytes, motion_prompt, model='veo-3.1-fast-generate-preview', poll_s=15, max_polls=40):
+def veo_i2v(still_png_bytes, motion_prompt, model='veo-3.1-fast-generate-preview', poll_s=15,
+            max_polls=40, seconds=None):
     b = base64.b64encode(still_png_bytes).decode()
+    params = {'aspectRatio':'16:9','personGeneration':'allow_adult'}
+    # Veo bills per second, so asking for the length we actually want to cut to is
+    # cheaper than generating 8s and throwing half away.
+    if seconds:
+        params['durationSeconds'] = int(seconds)
     body = {'instances':[{'prompt':motion_prompt,'image':{'bytesBase64Encoded':b,'mimeType':'image/png'}}],
-            'parameters':{'aspectRatio':'16:9','personGeneration':'allow_adult'}}
+            'parameters':params}
     d = _post(f'{BASE}/models/{model}:predictLongRunning', body, timeout=120)
     op = d['name']
     for _ in range(max_polls):
@@ -168,7 +174,7 @@ def veo_i2v(still_png_bytes, motion_prompt, model='veo-3.1-fast-generate-preview
                 raise VeoFiltered(f"veo returned no samples (filtered). resp keys={list(resp.get('generateVideoResponse',{}).keys())}")
             uri = samples[0]['video']['uri']
             vd = requests.get(uri, params={'key':GEM}, timeout=180).content
-            _add_cost('veo', veo_seconds=8)
+            _add_cost('veo', veo_seconds=int(seconds or 8))
             return vd
     raise RuntimeError('veo: timeout')
 

@@ -854,8 +854,11 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
         if vm.startswith('veo'):
             model = {'veo': 'veo-3.1-generate-preview', 'veo-fast': 'veo-3.1-fast-generate-preview',
                      'veo-lite': 'veo-3.1-lite-generate-preview'}.get(vm, vm)
-            clip = lib.veo_i2v(img, _veo_brief(pk, b, cast_desc or _speaker_name(b, style)), model=model)
-            cost += 1.20
+            want = int(float(pk.get('shot_seconds') or 8))
+            want = max(4, min(8, want))          # Veo's own range
+            clip = lib.veo_i2v(img, _veo_brief(pk, b, cast_desc or _speaker_name(b, style)),
+                               model=model, seconds=want)
+            cost += 0.15 * want
             veo_used = True
         else:
             clip = lib.omni_i2v(img, _motion_brief(style, b.get('motion_prompt'), _speaker_name(b, style)))
@@ -864,6 +867,8 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
         clip = lib.omni_video(_look_for_beat(pk, b) + "\n\nScene: " + (b['scene_prompt'] or '')); img = None
     if not locals().get('veo_used'): cost += 1.05   # veo already billed above
     clip_path = wd/'clips'/f'{i:02d}.mp4'; clip_path.write_bytes(clip)
+    if locals().get('veo_used'):
+        _trim_dead_tail(clip_path)
 
     if vo_asset is None:
         # Veo performed the line — lift its audio out as this beat's voice track
@@ -912,6 +917,46 @@ def _fetch_asset(asset_id, dest):
         with open(dest, 'wb') as f:
             for c in r.iter_content(1 << 16): f.write(c)
     return dest
+
+def _speech_end(path):
+    """When the spoken line finishes in a Veo clip, in seconds (None if unclear)."""
+    r = subprocess.run(['ffmpeg', '-nostdin', '-i', str(path), '-af',
+                        'silencedetect=noise=-32dB:d=0.35', '-f', 'null', '-'],
+                       capture_output=True, text=True)
+    total = _dur(path)
+    starts = [float(x.split('silence_start:')[1].split()[0])
+              for x in r.stderr.splitlines() if 'silence_start:' in x]
+    # the last stretch of silence that runs to the end of the clip is the dead tail
+    tail = [t for t in starts if t > 0.8 and total - t > 0.5]
+    return max(tail[-1], 0.8) if tail else None
+
+
+def _trim_dead_tail(path, floor_s=2.6, handle=0.45):
+    """Cut a generated clip when the line ends instead of running the full 8s.
+
+    Measured against the reference film: its median shot is 4.05s and only 23% of
+    shots run a full un-cut generation. The back half of an 8s clip is where the
+    model has nothing left to perform and starts drifting, so keeping it is what
+    makes an episode look loose. Returns the new duration.
+    """
+    total = _dur(path)
+    end = _speech_end(path)
+    if end is None:
+        return total
+    cut = max(floor_s, min(total, end + handle))
+    if total - cut < 0.6:
+        return total
+    out = path.with_suffix('.trim.mp4')
+    r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', str(path), '-t', f'{cut:.2f}',
+                        '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast',
+                        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', str(out)],
+                       capture_output=True, text=True)
+    if out.exists() and out.stat().st_size > 10000:
+        out.replace(path)
+        print(f'    trimmed {total:.1f}s -> {cut:.1f}s (line ended at {end:.1f}s)', flush=True)
+        return _dur(path)
+    return total
+
 
 def _clip_fps(path):
     try:
