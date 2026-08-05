@@ -502,10 +502,15 @@ def _veo_brief(pk, beat, speaker_desc):
                 persona = f" They are {c['personality']} — let that show in how they move and react."
                 break
     shot = (beat.get('meta') or {}).get('shot') or 'medium shot'
+    n_cast = len((beat.get('meta') or {}).get('cast') or [])
+    only = (f"Exactly {n_cast} character{'s' if n_cast != 1 else ''} appear in this shot — the one"
+            f"{'s' if n_cast != 1 else ''} in the reference image{'s' if n_cast != 1 else ''}. "
+            "Do not add any other people, adults, children or background extras. ") if n_cast else ''
     return (f"{shot}. {(beat.get('scene_prompt') or '').strip()}\n\n"
             f"{who} speaks this line out loud, clearly and in character, with accurate lip sync: "
             f"\"{line}\"\n\n"
             f"{pk.get('motion_prompt') or ''} {(beat.get('motion_prompt') or '')}\n"
+            f"{only}"
             f"Keep the art style, character design and colours exactly as in the reference image. "
             f"Natural blinks and eyebrow movement. No on-screen text, captions, subtitles or watermarks. "
             f"No background music.")
@@ -566,7 +571,7 @@ def _best_set(still, sets):
         if hit > score: best, score = k, hit
     return best
 
-BIBLE_BUDGET_S = 150      # hard cap on all reference-image work during planning
+BIBLE_BUDGET_S = 260      # hard cap on all reference-image work during planning
 
 def _ref_image(prompt, timeout=90):
     """One attempt, short timeout — a reference image is a nice-to-have, never a
@@ -605,7 +610,7 @@ def _build_location_bible(vid, style, beats, pk, deadline=None):
         return {}
 
     locs = {}
-    for c in (out.get('locations') or [])[:2]:
+    for c in (out.get('locations') or [])[:3]:
         if deadline and time.time() > deadline:
             print('  set bible: out of time, continuing without the rest', flush=True); break
         nm, desc = (c.get('name') or '').strip(), (c.get('description') or '').strip()
