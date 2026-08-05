@@ -846,9 +846,16 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
                             f"the geography consistent (things stay where they are).")
         parts.append({'text': pk.get('look_prompt', '') + extra + set_note +
                       "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')})
-        d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
-                      {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
-        img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
+        img = _still_image(parts)
+        if img is None:
+            # the image model returned nothing (usually a safety stop on one phrase).
+            # Retrying the identical prompt fails identically, so drop the reference
+            # images and ask for the scene on its own before giving up on the beat.
+            print(f'  beat {i}: still was blocked, retrying on the scene alone', flush=True)
+            img = _still_image([{'text': pk.get('look_prompt', '') +
+                                 "\n\nScene (wide 16:9): " + (b['scene_prompt'] or '')}])
+        if img is None:
+            raise RuntimeError('the image model returned no still for this shot (blocked)')
         still_path.write_bytes(img); cost += 0.14
         vm = pk.get('video_model') or 'omni'
         if vm.startswith('veo'):
@@ -917,6 +924,26 @@ def _fetch_asset(asset_id, dest):
         with open(dest, 'wb') as f:
             for c in r.iter_content(1 << 16): f.write(c)
     return dest
+
+def _still_image(parts, timeout=300):
+    """One still from the image model, or None when it returned nothing.
+
+    A blocked or empty candidate has no 'parts' key at all, which used to surface
+    as a bare KeyError after three identical retries.
+    """
+    import base64
+    d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
+                  {'contents': [{'parts': parts}],
+                   'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=timeout)
+    for c in (d.get('candidates') or []):
+        for part in ((c.get('content') or {}).get('parts') or []):
+            if 'inlineData' in part:
+                return base64.b64decode(part['inlineData']['data'])
+    why = ((d.get('candidates') or [{}])[0].get('finishReason')
+           or (d.get('promptFeedback') or {}).get('blockReason') or 'no image returned')
+    print(f'    image model gave nothing back ({why})', flush=True)
+    return None
+
 
 def _speech_end(path):
     """When the spoken line finishes in a Veo clip, in seconds (None if unclear)."""
