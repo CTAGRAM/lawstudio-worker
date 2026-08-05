@@ -916,6 +916,8 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
 
 
 def _fetch_asset(asset_id, dest):
+    if not asset_id:
+        raise ValueError('beat is missing this asset')
     row = supa.select('assets', id=f'eq.{asset_id}')[0]
     url = supa.public_url(row['storage_path'])
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
@@ -1111,7 +1113,9 @@ def reroll_beat(payload):
     bid = payload['beat_id']; note = payload.get('prompt', '')
     b = supa.select('video_beats', id=f'eq.{bid}')[0]
     v = supa.select('videos', id=f"eq.{b['video_id']}")[0]
-    wd = RUNS / b['video_id']; (wd/'stills').mkdir(parents=True, exist_ok=True); (wd/'clips').mkdir(parents=True, exist_ok=True)
+    wd = RUNS / b['video_id']
+    for sub in ('stills', 'clips', 'audio'):
+        (wd/sub).mkdir(parents=True, exist_ok=True)
     supa.update('video_beats', bid, {'status': 'pending'})
     style = v['style']; i = b['idx']
     kind = b.get('kind', 'scene')
@@ -1147,41 +1151,21 @@ def reroll_beat(payload):
         supa.update('video_beats', bid, {'status': 'done', 'still_asset': sa['id'], 'clip_asset': ca['id'],
                                          'meta': meta, **patch})
         return f'rerolled {kind} beat {i}'
-    scene = b['scene_prompt'] + (f"\nADJUSTMENT: {note}" if note else '')
-    pk = style_pack(style)
-    if pk.get('render_mode', 'image_to_video') == 'image_to_video':
-        import base64
-        cast_refs, cast_desc = _cast_for_beat(b, {}, style)
-        refs = cast_refs or _style_refs(style)
-        parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in refs]
-        extra = (" Featured character(s): " + cast_desc + ".") if cast_desc else ""
-        parts.append({'text': pk.get('look_prompt', '') + extra + "\n\nScene (wide 16:9): " + scene})
-        d = lib._post(f'{lib.BASE}/models/gemini-3-pro-image:generateContent',
-                      {'contents': [{'parts': parts}], 'generationConfig': {'responseModalities': ['IMAGE']}}, timeout=300)
-        img = next(base64.b64decode(p['inlineData']['data']) for p in d['candidates'][0]['content']['parts'] if 'inlineData' in p)
-        (wd/'stills'/f'{i:02d}.png').write_bytes(img)
-        clip = lib.omni_i2v(img, "Animate this exact image as a flat 2D explainer video clip. Keep the art style, characters, "
-                            "colors and layout exactly as shown. " + (b.get('motion_prompt') or 'Subtle natural motion.') + " No new elements, no text.")
-        sa = supa.upload_asset(str(wd/'stills'/f'{i:02d}.png'), 'still', title=f'reroll beat{i}', tags=['reroll', style], style=style)
-    else:
-        clip = lib.omni_video(_look_for_beat(pk, b) + "\n\nScene: " + scene); sa = None
-    cp = wd/'clips'/f'{i:02d}.mp4'; cp.write_bytes(clip)
-    spk = (b.get('meta') or {}).get('speaker')
-    if pk.get('lip_sync') and spk and b.get('vo_asset'):
-        try:
-            from pipeline import lipsync
-            raw = supa.upload_asset(str(cp), 'clip', title=f'reroll beat{i} pre-sync', tags=['raw', style], style=style)
-            vo = supa.select('assets', id=f"eq.{b['vo_asset']}")[0]
-            cp.write_bytes(lipsync.sync(supa.public_url(raw['storage_path']), supa.public_url(vo['storage_path'])))
-            print(f'  beat {i}: lip synced', flush=True)
-        except Exception as e:
-            print(f'  beat {i}: lip sync skipped ({str(e)[:120]})', flush=True)
-    ca = supa.upload_asset(str(cp), 'clip', title=f'reroll beat{i}', tags=['reroll', style], style=style, duration_s=_dur(cp))
-    patch = {'status': 'done', 'clip_asset': ca['id']}
-    if sa: patch['still_asset'] = sa['id']
+    # Re-shoot through the SAME generator the first pass used. This used to be a
+    # separate copy that always called omni with a flat-2D prompt, so rerolling a
+    # cinematic beat came back in the wrong style and with no voice track at all.
+    if note:
+        b = dict(b); b['scene_prompt'] = b['scene_prompt'] + f"\nADJUSTMENT: {note}"
+    palette = None
+    if v.get('brand_id'):
+        try: palette = supa.select('brands', id=f"eq.{v['brand_id']}")[0].get('palette')
+        except Exception: palette = None
+    prog = v.get('progress') or {}
+    _generate_beat(b, b['video_id'], wd, style, palette,
+                   prog.get('cast') or {}, prog.get('sets') or {})
     if (b.get('meta') or {}).get('error'):
-        m = dict(b['meta']); m.pop('error', None); patch['meta'] = m
-    supa.update('video_beats', bid, patch)
+        m = dict(b['meta']); m.pop('error', None)
+        supa.update('video_beats', bid, {'meta': m})
     return f'rerolled beat {i}'
 
 
