@@ -232,6 +232,21 @@ def _director(style, brand=None):
         if brand.get('director_rules'): base['rules'] = brand['director_rules']
     return base
 
+def _cast_briefing(style):
+    """Who the recurring cast are and how they behave, for the scriptwriter."""
+    rows = [c for c in _db_characters() if (c.get('style') or style) == style]
+    if not rows:
+        return ''
+    out = []
+    for c in rows[:8]:
+        bits = [f"- {c['name']} (key: {c['key']})"]
+        if c.get('description'): bits.append(f"looks: {c['description']}")
+        if c.get('personality'): bits.append(f"personality: {c['personality']}")
+        if c.get('relations'): bits.append(f"relationships: {c['relations']}")
+        out.append('; '.join(bits))
+    return ("\n\nTHE CAST — write them in character. Their personality drives what they say and how they say "
+            "it, and their relationships drive how they treat each other:\n" + "\n".join(out))
+
 def storyboard(style, topic, script, article_url=None, target_seconds=None, learnings=None, brand=None):
     # long briefs can't come back as one JSON blob — outline first, then fill in
     # each section, so a 25-minute video is just many small, reliable calls.
@@ -262,7 +277,7 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
     # "UK legal-explainer studio" turns "wheels on the bus" into bus licence law.
     profile = _director(style, brand)
     prompt = (f"{profile['who']} Write a storyboard as JSON.\n{src}\n\n"
-              f"Style: {style}. {scope} {guide}{learn}\n"
+              f"Style: {style}. {scope} {guide}{_cast_briefing(style)}{learn}\n"
               f"{profile['rules']} "
               'Return JSON: {"title": "...", "beats": [ ... ]}')
     return json.loads(lib.text_gen(prompt))
@@ -479,6 +494,13 @@ def _veo_brief(pk, beat, speaker_desc):
     line = (beat.get('vo_text') or '').strip()
     who = speaker_desc or (beat.get('meta') or {}).get('speaker_name') \
         or 'the character who is speaking in this shot'
+    persona = ''
+    spk = (beat.get('meta') or {}).get('speaker')
+    if spk:
+        for c in _db_characters():
+            if c.get('key') == spk and c.get('personality'):
+                persona = f" They are {c['personality']} — let that show in how they move and react."
+                break
     shot = (beat.get('meta') or {}).get('shot') or 'medium shot'
     return (f"{shot}. {(beat.get('scene_prompt') or '').strip()}\n\n"
             f"{who} speaks this line out loud, clearly and in character, with accurate lip sync: "
@@ -514,6 +536,9 @@ def _voice_for(style, speaker_key=None):
             if c.get('key') == speaker_key and (c.get('style') or style) == style:
                 if c.get('voice_name'): out['voice'] = c['voice_name']
                 if c.get('voice_style'): out['style'] = c['voice_style']
+                if c.get('personality'):
+                    out['style'] = (out.get('style') or 'Read this line') + \
+                        f" Perform it as this character: {c['personality']} "
                 break
     return out
 
@@ -748,6 +773,7 @@ def generate_video(job):
     prog.update({'stage': 'generating', 'gen_started_at': _now_iso(), 'gen_total': len(beats)})
     supa.update('videos', vid, {'status': 'running', 'progress': prog})
     video_cast = (v.get('progress') or {}).get('cast') or {}
+    sets = (v.get('progress') or {}).get('sets') or {}
     total_cost = 0.0
     done_n = 0
     for b in beats:
@@ -756,7 +782,7 @@ def generate_video(job):
         last_err = None
         for attempt in range(1, BEAT_TRIES + 1):
             try:
-                total_cost += _generate_beat(b, vid, wd, style, palette, video_cast)
+                total_cost += _generate_beat(b, vid, wd, style, palette, video_cast, sets)
                 last_err = None
                 break
             except Exception as e:
@@ -773,7 +799,7 @@ def generate_video(job):
     return f'generated {len(beats)} beats, ${total_cost:.2f}'
 
 
-def _generate_beat(b, vid, wd, style, palette, video_cast):
+def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
     """Render one beat (vo + visual) and mark it done. Returns the cost incurred.
     Raises on failure so the caller can retry."""
     bid = b['id']; i = b['idx']; kind = b['kind']
@@ -805,7 +831,7 @@ def _generate_beat(b, vid, wd, style, palette, video_cast):
         # same layout in every shot filmed there
         set_note = ""
         lk = (b.get('meta') or {}).get('location')
-        sets = (v.get('progress') or {}).get('sets') or {}
+        sets = sets or {}
         if lk and lk in sets:
             simg = _fetch_ref(sets[lk].get('ref_url') or '')
             if simg:
