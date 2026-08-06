@@ -529,13 +529,34 @@ def _motion_brief(style, motion_prompt, speaker=None):
                 "listens, reacting with small nods and expressions.")
     return keep + (motion_prompt or '') + ' ' + (style_pack(style).get('motion_prompt') or '') + talk
 
-def _voice_for(style, speaker_key=None):
+# Gemini TTS voices, grouped so a derived character gets one that suits them.
+CAST_VOICES = {
+    'boy':   ['Puck', 'Fenrir'],
+    'girl':  ['Leda', 'Aoede'],
+    'man':   ['Charon', 'Orus'],
+    'woman': ['Kore', 'Despina'],
+}
+
+
+def _pick_voice(kind, key):
+    """A stable voice for a derived character — same key, same voice, every run."""
+    pool = CAST_VOICES.get((kind or '').lower()) or CAST_VOICES['woman']
+    return pool[sum(ord(c) for c in str(key)) % len(pool)]
+
+
+def _voice_for(style, speaker_key=None, video_cast=None):
     """TTS voice + delivery. A character with their own voice speaks in it, so a
     scene reads as dialogue rather than one narrator reading every part; the
     style's voice is the narrator and the fallback."""
     pk = style_pack(style)
     out = {'voice': pk.get('voice_name') or 'Charon'}
     if pk.get('voice_style'): out['style'] = pk['voice_style']
+    # a character the planner derived carries its voice on the locked bible entry
+    entry = ((video_cast or {}).get('custom') or {}).get(speaker_key) if speaker_key else None
+    if entry:
+        if entry.get('voice_name'): out['voice'] = entry['voice_name']
+        out['style'] = (f"Speak as {entry.get('name','this character')}"
+                        + (f", who is {entry['desc']}" if entry.get('desc') else '') + ': ')
     if speaker_key:
         for c in _db_characters():
             if c.get('key') == speaker_key and (c.get('style') or style) == style:
@@ -562,6 +583,28 @@ def _beat_plan(kind, brand_name, style):
                 'how': 'figure + label, gentle push-in, VO'}
     return {'makes': kind, 'uses': '', 'how': ''}
 
+def _match_cast(want, name_to_key):
+    """Map a storyboard's name for someone onto the locked cast.
+
+    The storyboard writes 'Teacher' or 'Mrs Anya' where the bible locked
+    'Ms. Anya', and an unmatched name means that character gets re-invented.
+    """
+    w = ''.join(ch for ch in str(want).lower() if ch.isalnum() or ch == ' ').strip()
+    if not w:
+        return None
+    if w in name_to_key:
+        return name_to_key[w]
+    for nm, k in name_to_key.items():
+        n = ''.join(ch for ch in nm.lower() if ch.isalnum() or ch == ' ').strip()
+        if n == w or n in w or w in n:
+            return k
+    tokens = set(w.split())
+    for nm, k in name_to_key.items():
+        if tokens & set(nm.lower().split()):
+            return k
+    return None
+
+
 def _best_set(still, sets):
     """Match a shot to a locked set by word overlap when the plan didn't name one."""
     words = set(w for w in still.lower().split() if len(w) > 3)
@@ -571,7 +614,7 @@ def _best_set(still, sets):
         if hit > score: best, score = k, hit
     return best
 
-BIBLE_BUDGET_S = 260      # hard cap on all reference-image work during planning
+BIBLE_BUDGET_S = 340      # hard cap on all reference-image work during planning
 
 def _ref_image(prompt, timeout=90):
     """One attempt, short timeout — a reference image is a nice-to-have, never a
@@ -649,17 +692,20 @@ def _build_cast_bible(vid, style, beats, pk, deadline=None):
     digest = [{'speaker': b.get('speaker'), 'still': (b.get('still') or '')[:220]} for b in beats]
     try:
         bible = json.loads(lib.text_gen(
-            "These are the shots of one animated episode. List the RECURRING characters who appear in it.\n"
+            "These are the shots of one animated episode. List EVERY character who SPEAKS in it, "
+            "including small parts like the teacher, the driver or a single classmate — if they have a "
+            "line they need a locked look. Most important first.\n"
             f"{json.dumps(digest)}\n\n"
             "For each, write a precise visual description that will keep them identical in every shot: "
-            "age, build, hair, face, skin tone, exact clothing and colours. No names of real people.\n"
-            'Return ONLY JSON: {"characters":[{"name":"...","description":"..."}]}'))
+            "age, build, hair, face, skin tone, exact clothing and colours. No names of real people. "
+            "Also say which of boy / girl / man / woman they are, so we can cast a voice.\n"
+            'Return ONLY JSON: {"characters":[{"name":"...","description":"...","who":"boy|girl|man|woman"}]}'))
     except Exception as e:
         print(f'  cast bible failed: {str(e)[:120]}', flush=True)
         return {}
 
     custom = {}
-    for c in (bible.get('characters') or [])[:3]:
+    for c in (bible.get('characters') or [])[:5]:
         if deadline and time.time() > deadline:
             print('  cast bible: out of time, continuing without the rest', flush=True); break
         nm, desc = (c.get('name') or '').strip(), (c.get('description') or '').strip()
@@ -673,7 +719,9 @@ def _build_cast_bible(vid, style, beats, pk, deadline=None):
             ref = RUNS / vid / 'cast'; ref.mkdir(parents=True, exist_ok=True)
             fp = ref / f'{key}.png'; fp.write_bytes(img)
             a = supa.upload_asset(str(fp), 'char_ref', title=f'{nm} ({style})', tags=['cast', style], style=style)
-            custom[key] = {'name': nm, 'desc': desc, 'ref_url': supa.public_url(a['storage_path'])}
+            custom[key] = {'name': nm, 'desc': desc, 'ref_url': supa.public_url(a['storage_path']),
+                           'who': (c.get('who') or '').lower(),
+                           'voice_name': _pick_voice(c.get('who'), key)}
             print(f'  cast locked: {nm}', flush=True)
         except Exception as e:
             print(f'  cast ref failed for {nm}: {str(e)[:100]}', flush=True)
@@ -734,10 +782,13 @@ def plan_video(job):
         if bible and kind == 'scene':
             # cast this shot from the locked bible so the same people appear throughout
             want = [str(x) for x in (b.get('cast') or [])] + ([str(b['speaker'])] if b.get('speaker') else [])
-            keys = [name_to_key[w.lower()] for w in want if w.lower() in name_to_key]
+            keys = [k for k in (_match_cast(w, name_to_key) for w in want) if k]
             meta['cast'] = list(dict.fromkeys(keys)) or list(bible)[:2]
-            spk = str(b.get('speaker') or '').lower()
-            if spk in name_to_key: meta['speaker'] = name_to_key[spk]
+            spk = _match_cast(str(b.get('speaker') or ''), name_to_key)
+            # a shot with a spoken line must name who says it, or the voice is
+            # re-invented from scratch and the character stops sounding like themselves
+            meta['speaker'] = spk or (meta['cast'][0] if meta.get('cast') else None)
+            if not meta['speaker']: meta.pop('speaker', None)
         if sets and kind == 'scene':
             want = str(b.get('location') or '').lower()
             meta['location'] = set_names.get(want) or _best_set(b.get('still') or '', sets)
@@ -812,10 +863,12 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
     wav = wd/'audio'/f'{i:02d}.wav'
     speaker_key = (b.get('meta') or {}).get('speaker')
     pk = style_pack(style)
-    veo_voice = (pk.get('video_model') or 'omni').startswith('veo') and kind == 'scene'
+    veo_voice = ((pk.get('video_model') or 'omni').startswith('veo') and kind == 'scene'
+                 and (pk.get('voice_source') or 'veo') == 'veo')
     vo_asset = None
     if not veo_voice:
-        if not wav.exists(): lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key))
+        if not wav.exists():
+            lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key, video_cast))
         vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
     still_path = wd/'stills'/f'{i:02d}.png'
     if kind in ('board', 'stat'):
@@ -882,7 +935,7 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
         subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', str(clip_path), '-vn',
                         '-ac', '1', '-ar', '24000', str(wav)], capture_output=True, text=True)
         if not wav.exists() or wav.stat().st_size < 1000:
-            lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key))
+            lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key, video_cast))
         vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo (in-clip)',
                                      tags=['vo', 'veo'], duration_s=_dur(wav))
 
@@ -901,7 +954,14 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
             # never fail a beat over lip sync — keep the un-synced clip
             print(f'  beat {i}: lip sync skipped ({str(e)[:120]})', flush=True)
 
-    is_veo = (pk.get('video_model') or 'omni').startswith('veo') and kind == 'scene'
+    is_veo = veo_voice
+    if (pk.get('video_model') or 'omni').startswith('veo') and kind == 'scene' and not veo_voice:
+        # strip Veo's invented voice; the beat plays our locked one instead
+        mute = clip_path.with_suffix('.mute.mp4')
+        r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', str(clip_path), '-an',
+                            '-c:v', 'copy', str(mute)], capture_output=True, text=True)
+        if mute.exists() and mute.stat().st_size > 10000:
+            mute.replace(clip_path)
     dur = round(_dur(clip_path), 2) if is_veo else round(_dur(wav) + 0.6, 2)
     patch = {'status': 'done', 'vo_asset': vo_asset['id'], 'dur_s': dur}
     if is_veo:
