@@ -563,9 +563,12 @@ def _voice_for(style, speaker_key=None, video_cast=None):
                 if c.get('voice_name'): out['voice'] = c['voice_name']
                 if c.get('voice_style'): out['style'] = c['voice_style']
                 if c.get('personality'):
-                    out['style'] = (out.get('style') or 'Read this line') + \
-                        f" Perform it as this character: {c['personality']} "
+                    base = (out.get('style') or 'Read this line').rstrip().rstrip(':')
+                    out['style'] = f"{base}, performed as {c['personality'].strip().rstrip('.')}"
                 break
+    st = (out.get('style') or '').strip()
+    if st:
+        out['style'] = st.rstrip(':').rstrip() + ': '
     return out
 
 def _beat_plan(kind, brand_name, style):
