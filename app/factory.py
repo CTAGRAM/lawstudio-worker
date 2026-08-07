@@ -247,7 +247,8 @@ def _cast_briefing(style):
     return ("\n\nTHE CAST — write them in character. Their personality drives what they say and how they say "
             "it, and their relationships drive how they treat each other:\n" + "\n".join(out))
 
-def storyboard(style, topic, script, article_url=None, target_seconds=None, learnings=None, brand=None):
+def storyboard(style, topic, script, article_url=None, target_seconds=None, learnings=None,
+               brand=None, only_cast=None):
     # long briefs can't come back as one JSON blob — outline first, then fill in
     # each section, so a 25-minute video is just many small, reliable calls.
     if target_seconds and target_seconds > LONG_FORM_S and not script:
@@ -277,7 +278,10 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
     # "UK legal-explainer studio" turns "wheels on the bus" into bus licence law.
     profile = _director(style, brand)
     prompt = (f"{profile['who']} Write a storyboard as JSON.\n{src}\n\n"
-              f"Style: {style}. {scope} {guide}{_cast_briefing(style)}{learn}\n"
+              + (f"ONLY these characters appear in this episode: {', '.join(only_cast)}. "
+                 "Do not write anyone else into any shot — no colleagues, no clients, no bystanders, "
+                 "no 'main character'. Every person described must be one of them.\n" if only_cast else "")
+              + f"Style: {style}. {scope} {guide}{_cast_briefing(style)}{learn}\n"
               f"{profile['rules']} "
               'Return JSON: {"title": "...", "beats": [ ... ]}')
     return json.loads(lib.text_gen(prompt))
@@ -759,9 +763,14 @@ def plan_video(job):
             learnings = "\n".join(f"- {x}" for x in g[0]['guidelines'])
     except Exception:
         learnings = None
+    pinned = []
+    for k in series_cast:
+        c = next((x for x in _db_characters() if x['key'] == k), None)
+        if c: pinned.append(c['name'])
     sb = storyboard(style, payload.get('topic'), payload.get('script'),
                     article_url=payload.get('article_url'),
-                    target_seconds=int(ts) if ts else None, learnings=learnings, brand=brand)
+                    target_seconds=int(ts) if ts else None, learnings=learnings, brand=brand,
+                    only_cast=pinned or None)
     beats = sb['beats']
     pk_plan = style_pack(style)
     style_has_cast = any((c.get('style') or style) == style for c in _db_characters())
