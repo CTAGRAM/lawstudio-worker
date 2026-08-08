@@ -534,6 +534,11 @@ def _motion_brief(style, motion_prompt, speaker=None):
     return keep + (motion_prompt or '') + ' ' + (style_pack(style).get('motion_prompt') or '') + talk
 
 # Gemini TTS voices, grouped so a derived character gets one that suits them.
+# The client has asked for a British accent three separate times; it is the house
+# default and every voice instruction is built on top of it.
+ACCENT_DEFAULT = ("Read in a natural British English accent (UK), never American, "
+                  "clear, warm and unhurried")
+
 CAST_VOICES = {
     'boy':   ['Puck', 'Fenrir'],
     'girl':  ['Leda', 'Aoede'],
@@ -549,30 +554,35 @@ def _pick_voice(kind, key):
 
 
 def _voice_for(style, speaker_key=None, video_cast=None):
-    """TTS voice + delivery. A character with their own voice speaks in it, so a
-    scene reads as dialogue rather than one narrator reading every part; the
-    style's voice is the narrator and the fallback."""
+    """TTS voice + delivery for whoever speaks this beat.
+
+    The accent is decided by the style and is never dropped: character direction
+    is layered ON TOP of it. An earlier version replaced the whole instruction
+    when a character had their own entry, which quietly lost the British accent
+    the client keeps asking for.
+    """
     pk = style_pack(style)
     out = {'voice': pk.get('voice_name') or 'Charon'}
-    if pk.get('voice_style'): out['style'] = pk['voice_style']
-    # a character the planner derived carries its voice on the locked bible entry
+    accent = (pk.get('voice_style') or ACCENT_DEFAULT).strip().rstrip(':').rstrip()
+    direction = []
+
     entry = ((video_cast or {}).get('custom') or {}).get(speaker_key) if speaker_key else None
     if entry:
         if entry.get('voice_name'): out['voice'] = entry['voice_name']
-        out['style'] = (f"Speak as {entry.get('name','this character')}"
-                        + (f", who is {entry['desc']}" if entry.get('desc') else '') + ': ')
+        who = entry.get('name') or 'this character'
+        direction.append(f"speaking as {who}" + (f", who is {entry['desc']}" if entry.get('desc') else ''))
+
     if speaker_key:
         for c in _db_characters():
             if c.get('key') == speaker_key and (c.get('style') or style) == style:
                 if c.get('voice_name'): out['voice'] = c['voice_name']
-                if c.get('voice_style'): out['style'] = c['voice_style']
+                if c.get('voice_style'):
+                    accent = c['voice_style'].strip().rstrip(':').rstrip()
                 if c.get('personality'):
-                    base = (out.get('style') or 'Read this line').rstrip().rstrip(':')
-                    out['style'] = f"{base}, performed as {c['personality'].strip().rstrip('.')}"
+                    direction.append('performed as ' + c['personality'].strip().rstrip('.'))
                 break
-    st = (out.get('style') or '').strip()
-    if st:
-        out['style'] = st.rstrip(':').rstrip() + ': '
+
+    out['style'] = (accent + (', ' + ', '.join(direction) if direction else '')).rstrip(':').rstrip() + ': '
     return out
 
 def _beat_plan(kind, brand_name, style):
@@ -895,8 +905,18 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
         import base64
         cast_refs, cast_desc = _cast_for_beat(b, video_cast, style)
         if not cast_refs: cast_refs = _style_refs(style)
+        anchor = wd/'stills'/'_anchor.png'
+        if anchor.exists():
+            cast_refs = list(cast_refs) + [anchor.read_bytes()]
         parts = [{'inline_data': {'mime_type': 'image/png', 'data': base64.b64encode(r).decode()}} for r in cast_refs]
         extra = (" Featured character(s): " + cast_desc + ".") if cast_desc else ""
+        if cast_desc:
+            extra += (" COPY each character from their reference image exactly — the same face shape, the "
+                      "same eyes and eyebrows, the same nose and mouth, the same beard or hair shape and "
+                      "colour, the same skin tone, the same clothing and colours. Do not restyle, redraw or "
+                      "'improve' their features. They must be recognisably the identical person in every "
+                      "shot. Frame them large enough that the face is clearly drawn, never tiny in the "
+                      "distance.")
         # the locked set goes in as a reference as well — same vehicle, same room,
         # same layout in every shot filmed there
         set_note = ""
@@ -922,6 +942,9 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
         if img is None:
             raise RuntimeError('the image model returned no still for this shot (blocked)')
         still_path.write_bytes(img); cost += 0.14
+        anchor = wd/'stills'/'_anchor.png'
+        if cast_desc and not anchor.exists():
+            anchor.write_bytes(img)
         vm = pk.get('video_model') or 'omni'
         if vm.startswith('veo'):
             model = {'veo': 'veo-3.1-generate-preview', 'veo-fast': 'veo-3.1-fast-generate-preview',
