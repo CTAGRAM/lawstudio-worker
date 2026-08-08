@@ -872,7 +872,7 @@ def generate_video(job):
             supa.update('video_beats', bid, {'status': 'failed',
                         'meta': {**(b.get('meta') or {}), 'error': f'after {BEAT_TRIES} tries: {last_err}'[:600]}})
         _stage(vid, 'generating', gen_done=done_n + 1, gen_total=len(beats)); done_n += 1
-    _stage(vid, 'awaiting_render')
+    _stage(vid, 'awaiting_render', gen_done_at=_now_iso())
     supa.update('videos', vid, {'status': 'review', 'total_cost': round(total_cost, 2)})
     return f'generated {len(beats)} beats, ${total_cost:.2f}'
 
