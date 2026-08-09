@@ -1204,6 +1204,99 @@ def assemble_video(video_id):
     supa.update('videos', video_id, {'status': 'done', 'final_asset': fa['id'], 'duration_s': round(total, 1)})
     return f'assembled {total:.1f}s -> asset {fa["id"][:8]}'
 
+def _has_audio(path):
+    r = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a',
+                        '-show_entries', 'stream=index', '-of', 'csv=p=0', str(path)],
+                       capture_output=True, text=True)
+    return bool(r.stdout.strip())
+
+
+def screencast_video(job):
+    """Top-and-tail a manually recorded screen recording with the brand's animated
+    intro/outro, keep the presenter's own voice, level the audio (optional music
+    bed), and produce a publish-ready MP4. No AI generation — this is the Go Legal
+    AI flow where Karim records the screen himself, then optimises title/description
+    and publishes to YouTube like any other video.
+    """
+    video_id = job['video_id']
+    payload = job.get('payload') or {}
+    supa.update('videos', video_id, {'status': 'rendering'})
+    _stage(video_id, 'assembling', assemble_started_at=_now_iso())
+    v = supa.select('videos', id=f'eq.{video_id}')[0]
+    prog = v.get('progress') or {}
+    src_asset = payload.get('source_asset') or prog.get('source_asset')
+    if not src_asset:
+        raise RuntimeError('screencast has no uploaded recording')
+    music_on = bool(payload.get('music') if payload.get('music') is not None else prog.get('music'))
+    brand = supa.select('brands', id=f"eq.{v['brand_id']}")[0] if v.get('brand_id') else None
+
+    wd = RUNS / video_id; segs = wd/'segs'
+    segs.mkdir(parents=True, exist_ok=True)
+    FPS = 24
+    # 1920x1080, letterbox any non-16:9 recording on a dark ground so it never stretches
+    NORM_V = ("scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,"
+              "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x0E1116,fps=%d,format=yuv420p" % FPS)
+
+    def norm(inp, out, keep_audio):
+        if keep_audio and _has_audio(inp):
+            _run(['ffmpeg', '-nostdin', '-y', '-i', str(inp), '-vf', NORM_V,
+                  '-c:v', 'libx264', '-crf', '18', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-b:a', '192k', str(out)])
+        else:
+            _run(['ffmpeg', '-nostdin', '-y', '-i', str(inp),
+                  '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+                  '-vf', NORM_V, '-map', '0:v', '-map', '1:a', '-shortest',
+                  '-c:v', 'libx264', '-crf', '18', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-b:a', '192k', str(out)])
+
+    order = []
+    if brand and brand.get('intro_asset'):
+        ip = wd/'intro.mp4'
+        if not ip.exists(): _fetch_asset(brand['intro_asset'], ip)
+        norm(ip, segs/'00_intro.mp4', keep_audio=False)
+        order.append(segs/'00_intro.mp4')
+
+    rec = wd/'source.mp4'
+    if not rec.exists(): _fetch_asset(src_asset, rec)
+    norm(rec, segs/'10_main.mp4', keep_audio=True)   # keep the presenter's narration
+    order.append(segs/'10_main.mp4')
+
+    if brand and brand.get('outro_asset'):
+        op = wd/'outro.mp4'
+        if not op.exists(): _fetch_asset(brand['outro_asset'], op)
+        norm(op, segs/'20_outro.mp4', keep_audio=False)
+        order.append(segs/'20_outro.mp4')
+
+    # every segment now shares codec/params, so a stream copy concat is safe
+    concat = segs/'concat.txt'
+    concat.write_text('\n'.join(f"file '{p}'" for p in order))
+    joined = wd/'joined.mp4'
+    _run(['ffmpeg', '-nostdin', '-y', '-f', 'concat', '-safe', '0', '-i', str(concat), '-c', 'copy', str(joined)])
+    total = _dur(joined)
+
+    final = wd/'final.mp4'
+    if music_on:
+        bed = _asset('bed.mp3', '/Users/rudra/OpenMontage/pipelines/flat2d-studio/brand/music/bed.mp3')
+        fc = (f"[0:a]loudnorm=I=-15.5:TP=-1.4[voice];"
+              f"[1:a]atrim=0:{total},asetpts=PTS-STARTPTS,volume=0.05,afade=t=out:st={max(total-2.5,0):.2f}:d=2.5[bed];"
+              f"[voice][bed]amix=inputs=2:normalize=0:duration=first,alimiter=limit=0.94[a]")
+        r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', str(joined), '-i', bed,
+                            '-filter_complex', fc, '-map', '0:v', '-map', '[a]',
+                            '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(final)],
+                           capture_output=True, text=True)
+    else:
+        r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', str(joined),
+                            '-af', 'loudnorm=I=-15.5:TP=-1.4,alimiter=limit=0.94',
+                            '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(final)],
+                           capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError('screencast mux: ' + _ff_err(r.stderr))
+
+    fa = supa.upload_asset(str(final), 'video', title=v.get('title') or 'screencast',
+                           tags=['final', 'screencast'], brand_id=v.get('brand_id'), duration_s=total)
+    _stage(video_id, 'ready', finished_at=_now_iso())
+    supa.update('videos', video_id, {'status': 'done', 'final_asset': fa['id'], 'duration_s': round(total, 1)})
+    return f'screencast assembled {total:.1f}s -> asset {fa["id"][:8]}'
+
+
 def reroll_beat(payload):
     bid = payload['beat_id']; note = payload.get('prompt', '')
     b = supa.select('video_beats', id=f'eq.{bid}')[0]

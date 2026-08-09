@@ -61,7 +61,7 @@ def _dispatch(job):
         supa.update_job(job['id'], {'status': 'done', 'log': 'echo ok'})
     elif jtype in ('produce', 'plan'):
         handle_produce(job)
-    elif jtype in ('generate', 'reroll_beat', 'assemble', 'edit'):
+    elif jtype in ('generate', 'reroll_beat', 'assemble', 'edit', 'screencast'):
         import factory
         supa.update_job(job['id'], {'status': 'running'})
         if jtype == 'generate':
@@ -70,6 +70,8 @@ def _dispatch(job):
             msg = factory.assemble_video(job['video_id'])
         elif jtype == 'edit':
             msg = factory.edit_video(job)
+        elif jtype == 'screencast':
+            msg = factory.screencast_video(job)
         elif jtype == 'reroll_beat':
             payload = job.get('payload') or {}
             try:
