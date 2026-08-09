@@ -580,6 +580,9 @@ def _voice_for(style, speaker_key=None, video_cast=None):
                     accent = c['voice_style'].strip().rstrip(':').rstrip()
                 if c.get('personality'):
                     direction.append('performed as ' + c['personality'].strip().rstrip('.'))
+                # a character with a cloned voice speaks in it, not a preset
+                if c.get('voice_provider') and c.get('voice_id'):
+                    out['voice_provider'] = c['voice_provider']; out['voice_id'] = c['voice_id']
                 break
 
     out['style'] = (accent + (', ' + ', '.join(direction) if direction else '')).rstrip(':').rstrip() + ': '

@@ -178,7 +178,39 @@ def veo_i2v(still_png_bytes, motion_prompt, model='veo-3.1-fast-generate-preview
             return vd
     raise RuntimeError('veo: timeout')
 
-def tts(text, outfile, voice=None, style=None):
+ELEVEN_KEY = _cred('ELEVENLABS_API_KEY')
+
+
+def _eleven_tts(text, outfile, voice_id):
+    """Synthesize with a character's cloned ElevenLabs voice; write a mono wav so
+    the assembly pipeline treats it exactly like a Gemini clip."""
+    import subprocess, os as _os
+    r = requests.post(f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}',
+                      params={'output_format': 'mp3_44100_128'},
+                      headers={'xi-api-key': ELEVEN_KEY, 'accept': 'audio/mpeg', 'content-type': 'application/json'},
+                      json={'text': text, 'model_id': 'eleven_multilingual_v2',
+                            'voice_settings': {'stability': 0.5, 'similarity_boost': 0.85, 'use_speaker_boost': True}},
+                      timeout=180)
+    r.raise_for_status()
+    tmp = str(outfile) + '.mp3'
+    with open(tmp, 'wb') as f: f.write(r.content)
+    subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', tmp, '-ac', '1', '-ar', '24000', str(outfile)],
+                   capture_output=True)
+    try: _os.remove(tmp)
+    except OSError: pass
+    _add_cost('tts')
+    with wave.open(str(outfile)) as w:
+        return w.getnframes() / w.getframerate()
+
+
+def tts(text, outfile, voice=None, style=None, voice_provider=None, voice_id=None):
+    # a character with a cloned voice speaks in it; fall back to Gemini if the
+    # clone can't be reached so a beat never fails over a voice
+    if voice_provider == 'elevenlabs' and voice_id and ELEVEN_KEY:
+        try:
+            return _eleven_tts(text, outfile, voice_id)
+        except Exception as e:
+            print(f'    elevenlabs tts failed ({str(e)[:90]}), falling back to gemini', flush=True)
     voice = voice or BRAND['voice']
     style = style or "Read in a calm, warm, professional British explainer voice, clear, measured and reassuring: "
     d = _post(f'{BASE}/models/gemini-2.5-pro-preview-tts:generateContent',
