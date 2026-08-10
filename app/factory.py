@@ -209,6 +209,26 @@ def _run(cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode: raise RuntimeError('ffmpeg: ' + _ff_err(r.stderr))
 
+
+def _ensure_dur(path, want, fps=24):
+    """Guarantee a rendered clip is at least `want` seconds — the constrained
+    render box occasionally truncates a long segment (or the caption burn) while
+    still exiting 0, which left the video track shorter than the audio so the tail
+    played 'audio only'. If short, pad the last frame out to length."""
+    from pathlib import Path as _P
+    path = _P(path)
+    got = _dur(path)
+    if got >= want - 0.12 or got <= 0:
+        return
+    pad = want - got
+    tmp = path.with_suffix('.pad.mp4')
+    r = subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', str(path),
+                        '-vf', f'tpad=stop_mode=clone:stop_duration={pad:.2f},fps={fps},format=yuv420p',
+                        '-an', '-c:v', 'libx264', '-crf', '18', str(tmp)], capture_output=True, text=True)
+    if tmp.exists() and _dur(tmp) >= want - 0.12:
+        tmp.replace(path)
+        print(f'    padded short segment {path.name}: {got:.1f}s -> {want:.1f}s', flush=True)
+
 def fetch_article(url):
     """Fetch an article and reduce to readable text (for summarize-and-transform scripting)."""
     import re, requests as rq
@@ -1132,6 +1152,7 @@ def assemble_video(video_id):
             vf = (f"trim={trim},setpts=(PTS-STARTPTS)*{factor:.4f},scale=1920:1080:flags=lanczos,unsharp=3:3:0.35,"
                   f"tpad=stop_mode=clone:stop_duration={hold:.2f},trim=0:{d},fps={FPS},format=yuv420p")
         _run(['ffmpeg','-nostdin','-y','-i',str(src),'-vf',vf,'-an','-c:v','libx264','-crf','18',str(out)])
+        _ensure_dur(out, d, FPS)   # keep every segment exactly its beat length so A/V never drifts
         b['start'] = t; t += d
         order.append(out)
     total_vo_end = t
@@ -1182,6 +1203,9 @@ def assemble_video(video_id):
         vf = "eq=saturation=1.08:gamma=1.02"
     _run(['ffmpeg','-nostdin','-y','-i',str(wd/'work.mp4'), '-vf', vf,
           '-an','-c:v','libx264','-crf','18','-preset','medium',str(wd/'work_subs.mp4')])
+    # last line of defence: the video track must never end before the audio, or the
+    # tail plays "audio only" — pad the burned video out to the full timeline
+    _ensure_dur(wd/'work_subs.mp4', total, FPS)
 
     # audio
     inp = ['-i', str(wd/'work_subs.mp4')]; fc = []; nl = []; i = 1
