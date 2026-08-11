@@ -229,6 +229,15 @@ def _ensure_dur(path, want, fps=24):
         tmp.replace(path)
         print(f'    padded short segment {path.name}: {got:.1f}s -> {want:.1f}s', flush=True)
 
+
+def _silent_wav(path, seconds):
+    """A silent mono 24kHz wav of `seconds` — the voice track for a beat that has
+    no voiceover, so a silent shot renders instead of crashing the whole video."""
+    seconds = max(0.3, float(seconds or 1.0))
+    subprocess.run(['ffmpeg', '-nostdin', '-y', '-f', 'lavfi', '-t', f'{seconds:.2f}',
+                    '-i', 'anullsrc=channel_layout=mono:sample_rate=24000',
+                    '-c:a', 'pcm_s16le', str(path)], capture_output=True, text=True)
+
 def fetch_article(url):
     """Fetch an article and reduce to readable text (for summarize-and-transform scripting)."""
     import re, requests as rq
@@ -878,6 +887,13 @@ def generate_video(job):
     total_cost = 0.0
     done_n = 0
     for b in beats:
+        # user hit Stop — halt before spending on the next beat, keeping what's done
+        cur = supa.select('videos', id=f'eq.{vid}')[0]
+        if (cur.get('progress') or {}).get('cancel'):
+            p2 = dict(cur.get('progress') or {}); p2.pop('cancel', None); p2['stage'] = 'cancelled'
+            supa.update('videos', vid, {'status': 'review', 'progress': p2, 'total_cost': round(total_cost, 2)})
+            print(f'  generation cancelled by user after {done_n} beats', flush=True)
+            return f'cancelled after {done_n} beats, ${total_cost:.2f}'
         bid = b['id']; i = b['idx']
         supa.update('video_beats', bid, {'status': 'pending'})
         last_err = None
@@ -911,10 +927,16 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
     veo_voice = ((pk.get('video_model') or 'omni').startswith('veo') and kind == 'scene'
                  and (pk.get('voice_source') or 'veo') == 'veo')
     vo_asset = None
+    has_vo = bool((b.get('vo_text') or '').strip())   # a beat may have no line (silent shot)
     if not veo_voice:
         if not wav.exists():
-            lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key, video_cast))
-        vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
+            if has_vo:
+                lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key, video_cast))
+            elif kind in ('board', 'stat'):
+                _silent_wav(wav, 5.0)   # a silent card still needs a track + a length
+            # a silent SCENE fills its track after the clip, matching its length
+        if wav.exists():
+            vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo', tags=['vo'], duration_s=_dur(wav))
     still_path = wd/'stills'/f'{i:02d}.png'
     if kind in ('board', 'stat'):
         d_beat = round(_dur(wav) + 0.6, 2); clip_path = wd/'clips'/f'{i:02d}.mp4'
@@ -993,7 +1015,10 @@ def _generate_beat(b, vid, wd, style, palette, video_cast, sets=None):
         subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', str(clip_path), '-vn',
                         '-ac', '1', '-ar', '24000', str(wav)], capture_output=True, text=True)
         if not wav.exists() or wav.stat().st_size < 1000:
-            lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key, video_cast))
+            if has_vo:
+                lib.tts(b['vo_text'], str(wav), **_voice_for(style, speaker_key, video_cast))
+            else:
+                _silent_wav(wav, _dur(clip_path))   # no voiceover on this beat: silent, matching the clip
         vo_asset = supa.upload_asset(str(wav), 'vo', title=f'{vid[:8]} beat{i} vo (in-clip)',
                                      tags=['vo', 'veo'], duration_s=_dur(wav))
 
@@ -1116,6 +1141,12 @@ def _clip_fps(path):
         return 0.0
 
 def assemble_video(video_id):
+    # user hit Stop before the render started — don't burn the final cut
+    _v0 = supa.select('videos', id=f'eq.{video_id}')[0]
+    if (_v0.get('progress') or {}).get('cancel'):
+        p2 = dict(_v0.get('progress') or {}); p2.pop('cancel', None); p2['stage'] = 'cancelled'
+        supa.update('videos', video_id, {'status': 'review', 'progress': p2})
+        return 'render cancelled by user'
     # flip the row to 'rendering' straight away so the dashboard reflects it even
     # if the click-time update was missed
     supa.update('videos', video_id, {'status': 'rendering'})
@@ -1186,7 +1217,8 @@ def assemble_video(video_id):
     for b in beats:
         vo_d = float(b['dur_s']) - 0.6
         lead = 0.0 if (b.get('meta') or {}).get('in_clip_audio') else 0.25
-        lines = chunk(b['vo_text']); tot = sum(len(l) for l in lines); pos = 0
+        lines = chunk(b['vo_text'] or ''); tot = sum(len(l) for l in lines); pos = 0
+        if not tot: continue   # a silent beat has no caption
         for i, l in enumerate(lines):
             st = b['start'] + lead + vo_d*(pos/tot); pos += len(l)
             en = b['start'] + lead + vo_d*(pos/tot)
@@ -1211,7 +1243,9 @@ def assemble_video(video_id):
     inp = ['-i', str(wd/'work_subs.mp4')]; fc = []; nl = []; i = 1
     for b in beats:
         wav = wd/'audio'/f"{b['idx']:02d}.wav"
-        if not wav.exists(): _fetch_asset(b['vo_asset'], wav)
+        if not wav.exists():
+            if not b.get('vo_asset'): continue   # silent beat with no track — nothing to mix
+            _fetch_asset(b['vo_asset'], wav)
         lead = 0.0 if (b.get('meta') or {}).get('in_clip_audio') else 0.25
         dl = int((b['start'] + lead)*1000)
         inp += ['-i', str(wav)]

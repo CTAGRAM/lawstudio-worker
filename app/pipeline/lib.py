@@ -204,6 +204,10 @@ def _eleven_tts(text, outfile, voice_id):
 
 
 def tts(text, outfile, voice=None, style=None, voice_provider=None, voice_id=None):
+    # a beat with no line must be handled as silence by the caller, never sent
+    # here — guard so an empty line fails clearly instead of "str + NoneType"
+    if not (text or '').strip():
+        raise ValueError('tts called with empty text (a silent beat must use _silent_wav instead)')
     # a character with a cloned voice speaks in it; fall back to Gemini if the
     # clone can't be reached so a beat never fails over a voice
     if voice_provider == 'elevenlabs' and voice_id and ELEVEN_KEY:
