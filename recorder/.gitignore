@@ -1,0 +1,14 @@
+node_modules/
+_rec/
+out/
+*_out/
+*.mp4
+*.webm
+*.wav
+*.pcm
+*.log
+job*.json
+pipe_job*.json
+plan_job*.json
+*.events.json
+*.plan.json
