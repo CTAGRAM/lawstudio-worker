@@ -39,6 +39,24 @@ export async function updateVideo(id, patch) {
   return rest('PATCH', 'videos', { params: { id: `eq.${id}` }, body: patch, prefer: 'return=representation' });
 }
 
+export async function getBrand(id) {
+  if (!id) return null;
+  const rows = await rest('GET', 'brands', { params: { id: `eq.${id}`, limit: '1' } });
+  return rows && rows.length ? rows[0] : null;
+}
+
+// download an asset (by id) to a local path via its public URL
+export async function downloadAsset(assetId, dest) {
+  if (!assetId) return null;
+  const rows = await rest('GET', 'assets', { params: { id: `eq.${assetId}`, select: 'storage_path', limit: '1' } });
+  if (!rows || !rows.length) return null;
+  const r = await fetch(publicUrl(rows[0].storage_path));
+  if (!r.ok) throw new Error(`download asset ${assetId} ${r.status}`);
+  const { writeFileSync } = await import('fs');
+  writeFileSync(dest, Buffer.from(await r.arrayBuffer()));
+  return dest;
+}
+
 const MIME = { mp4: 'video/mp4', webm: 'video/webm', wav: 'audio/wav', mp3: 'audio/mpeg', png: 'image/png', jpg: 'image/jpeg' };
 
 // upload a file to the public 'assets' bucket and insert an assets row

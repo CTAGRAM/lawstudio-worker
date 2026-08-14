@@ -22,8 +22,8 @@ SEMI = f'{FONTS}/Poppins-SemiBold.ttf'
 MODEL = os.environ.get('WHISPER_MODEL', '/Users/rudra/.cache/whisper-cpp/ggml-base.en.bin')
 TMP = os.path.dirname(OUT)
 VO_OFFSET = 0.35
-ACCENT = '0x7C4DFF'
 E = os.environ.get
+ACCENT = E('ACCENT', '0x7C4DFF')
 
 
 def run(cmd):
@@ -45,22 +45,27 @@ def srt_t(t):
 
 
 # ---- captions: from known narration text (no whisper) OR whisper on the VO ----
+# Break ONLY at sentence / clause boundaries so captions read as complete,
+# natural phrases (never mid-sentence, never a stray fragment). Timed by word
+# share across the VO. Natural case — not ALL CAPS — reads far less "AI".
 def captions_from_text(text, vo_dur):
-    words = re.sub(r'\s+', ' ', text).strip().split(' ')
-    groups, cur = [], []
-    for w in words:
+    tokens = re.sub(r'\s+', ' ', text).strip().split(' ')
+    caps, cur = [], []
+    for w in tokens:
         cur.append(w)
-        if len(cur) >= 4:
-            groups.append(cur); cur = []
+        end = w[-1:] if w else ''
+        n = len(cur)
+        if end in '.!?' or (end in ',;:' and n >= 5) or n >= 11:
+            caps.append(' '.join(cur)); cur = []
     if cur:
-        groups.append(cur)
-    total = max(1, len(words))
-    caps, t = [], VO_OFFSET
-    for g in groups:
-        d = len(g) / total * vo_dur
-        caps.append((t, t + d, ' '.join(g)))
+        caps.append(' '.join(cur))
+    total = max(1, sum(len(c.split(' ')) for c in caps))
+    out, t = [], VO_OFFSET
+    for c in caps:
+        d = len(c.split(' ')) / total * vo_dur
+        out.append((t, t + d, c))
         t += d
-    return caps
+    return out
 
 
 def captions_from_whisper():
@@ -84,9 +89,11 @@ def captions_from_whisper():
             words.append((st, en, txt))
     caps, cur = [], []
     for w in words:
-        if cur and (len(cur) >= 4 or w[1]-cur[0][0] > 2.2 or w[0]-cur[-1][1] > 0.5):
-            caps.append((cur[0][0], cur[-1][1] + 0.12, ' '.join(x[2] for x in cur))); cur = []
         cur.append(w)
+        end = w[2][-1:] if w[2] else ''
+        n = len(cur)
+        if end in '.!?' or (end in ',;:' and n >= 5) or n >= 11:
+            caps.append((cur[0][0], cur[-1][1] + 0.12, ' '.join(x[2] for x in cur))); cur = []
     if cur:
         caps.append((cur[0][0], cur[-1][1] + 0.12, ' '.join(x[2] for x in cur)))
     return caps
@@ -96,12 +103,12 @@ ASS_HEAD = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1920
 PlayResY: 1080
-WrapStyle: 2
+WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,Poppins ExtraBold,58,&H00FFFFFF,&H00FFFFFF,&H00200A0E,&HB4000000,-1,0,0,0,100,100,0.4,0,1,4,2,2,200,200,90,1
+Style: Cap,Poppins SemiBold,52,&H00FFFFFF,&H00FFFFFF,&H00201A14,&HA0000000,-1,0,0,0,100,100,0.2,0,1,3.5,1.6,2,300,300,96,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -113,7 +120,7 @@ caps = captions_from_text(E('CAPTION_TEXT'), vo_dur) if E('CAPTION_TEXT') else c
 ass = os.path.join(TMP, '_caps.ass')
 ev = []
 for st, en, text in caps:
-    text = re.sub(r'\s+([,.?!;:])', r'\1', text).replace('{', '(').replace('}', ')').upper()
+    text = re.sub(r'\s+([,.?!;:])', r'\1', text).replace('{', '(').replace('}', ')').strip()
     ev.append(f'Dialogue: 0,{srt_t(st)},{srt_t(max(en, st+0.4))},Cap,,0,0,0,,{POP}{text}')
 open(ass, 'w', encoding='utf-8').write(ASS_HEAD + '\n'.join(ev) + '\n')
 print(f'{len(caps)} captions', flush=True)
@@ -149,10 +156,26 @@ def card(path, secs, title, tagline, kicker=None):
          '-c:a', 'aac', '-b:a', '192k', '-shortest', path])
 
 
+def has_audio(f):
+    try:
+        return bool(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'a',
+            '-show_entries', 'stream=index', '-of', 'csv=p=0', f]).strip())
+    except Exception:
+        return False
+
+
 def norm_card(inp, path):
-    run(['ffmpeg', '-nostdin', '-y', '-i', inp, '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
-         '-map', '0:v', '-map', '1:a', '-r', '30', '-c:v', 'libx264', '-crf', '19', '-preset', 'medium',
-         '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-shortest', path])
+    # normalise a prebuilt card/brand-intro to shared codec params; KEEP its own
+    # audio (brand sting/music) when present, else add a silent track for concat.
+    scale = 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x0A0713,setsar=1'
+    if has_audio(inp):
+        run(['ffmpeg', '-nostdin', '-y', '-i', inp, '-map', '0:v:0', '-map', '0:a:0', '-vf', scale, '-r', '30',
+             '-c:v', 'libx264', '-crf', '19', '-preset', 'medium', '-pix_fmt', 'yuv420p',
+             '-ar', '48000', '-ac', '2', '-c:a', 'aac', '-b:a', '192k', path])
+    else:
+        run(['ffmpeg', '-nostdin', '-y', '-i', inp, '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
+             '-map', '0:v', '-map', '1:a', '-vf', scale, '-r', '30', '-c:v', 'libx264', '-crf', '19', '-preset', 'medium',
+             '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-shortest', path])
 
 
 intro = os.path.join(TMP, '_intro.mp4')

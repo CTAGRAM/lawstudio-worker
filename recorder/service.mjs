@@ -6,7 +6,7 @@ import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { execFileSync, execFile } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { claimBrowsercast, updateVideo, uploadAsset, publicUrl } from './supa.mjs';
+import { claimBrowsercast, updateVideo, uploadAsset, publicUrl, getBrand, downloadAsset } from './supa.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FONTS = process.env.FONTS_DIR || join(HERE, 'fonts');
@@ -30,8 +30,24 @@ async function handle(v) {
   const name = 'bc_' + v.id.slice(0, 8);
   const out = join(WORKDIR, v.id);
   mkdirSync(out, { recursive: true });
+
+  // brand assets: real intro/outro videos, logo, palette accent, narrator voice
+  const brand = await getBrand(v.brand_id).catch(() => null);
+  const bj = {};
+  if (brand) {
+    const pal = brand.palette || {};
+    bj.accent = pal.accent || null;      // e.g. Go Legal AI gold #f6bb54
+    bj.navy = pal.navy || null;
+    bj.brandName = brand.name || null;
+    bj.voice = brand.voice || null;      // per-brand narrator
+    try { if (brand.intro_asset) bj.introPath = await downloadAsset(brand.intro_asset, join(out, 'brand_intro.mp4')); } catch (e) { log('intro dl skip', e.message); }
+    try { if (brand.outro_asset) bj.outroPath = await downloadAsset(brand.outro_asset, join(out, 'brand_outro.mp4')); } catch (e) { log('outro dl skip', e.message); }
+    try { if (brand.logo_asset) bj.logoPath = await downloadAsset(brand.logo_asset, join(out, 'logo.png')); } catch (e) { log('logo dl skip', e.message); }
+    log(`brand ${brand.name}: accent=${bj.accent} voice=${bj.voice} intro=${!!bj.introPath} outro=${!!bj.outroPath} logo=${!!bj.logoPath}`);
+  }
+
   const job = { url: pr.url, goal: pr.goal || '', name, outDir: out,
-    cards: 'ffmpeg', captions: 'text', fontsDir: FONTS, aspectPack: pr.aspectPack !== false };
+    cards: 'ffmpeg', captions: 'text', fontsDir: FONTS, aspectPack: pr.aspectPack !== false, ...bj };
   const jobPath = join(out, 'job.json');
   writeFileSync(jobPath, JSON.stringify(job));
 
@@ -52,9 +68,17 @@ async function handle(v) {
         formats[tag] = publicUrl(a.storage_path); } catch (e) { log('pack upload skipped', tag, e.message); }
     }
   }
+  // branded thumbnail -> asset + progress.thumbnail
+  let thumbnail = null;
+  const thumb = join(out, `${name}_thumb.png`);
+  if (existsSync(thumb)) {
+    try { const ta = await uploadAsset(thumb, 'graphic', { title: `${v.title} thumbnail`, brand_id: v.brand_id, tags: ['thumbnail', 'browsercast'] });
+      thumbnail = publicUrl(ta.storage_path); } catch (e) { log('thumbnail upload skipped', e.message); }
+  }
+
   await updateVideo(v.id, { status: 'done', final_asset: fa.id, duration_s: Math.round(d * 10) / 10,
-    progress: { ...pr, formats } });
-  log(`✓ done ${v.id} (${d.toFixed(1)}s) -> ${formats['16x9']}`);
+    progress: { ...pr, formats, thumbnail } });
+  log(`✓ done ${v.id} (${d.toFixed(1)}s) -> ${formats['16x9']}${thumbnail ? ' +thumb' : ''}`);
 }
 
 async function loop() {

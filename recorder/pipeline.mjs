@@ -71,7 +71,7 @@ const vo = P('vo.wav');
   const r = execFileSync('curl', ['-s', '-X', 'POST',
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${g}`,
     '-H', 'Content-Type: application/json', '-d', JSON.stringify({
-      contents: [{ parts: [{ text: `Read in a calm, credible, professional narrator voice: ${narration}` }] }],
+      contents: [{ parts: [{ text: `Narrate in a warm, friendly, professional BRITISH ENGLISH voice (en-GB, Received Pronunciation) — clear, natural and credible, never robotic. Do NOT use an American accent. Read this: ${narration}` }] }],
       generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
     })], { maxBuffer: 64 * 1024 * 1024 }).toString();
   const j = JSON.parse(r);
@@ -89,11 +89,19 @@ const final = join(OUT, `${NAME}-explainer.mp4`);
 const bfEnv = { ...process.env };
 if (job.fontsDir) bfEnv.FONTS_DIR = job.fontsDir;
 if (job.captions === 'text') bfEnv.CAPTION_TEXT = narration;
+if (job.accent) bfEnv.ACCENT = '0x' + String(job.accent).replace('#', '');   // brand palette accent
 
-if (job.cards === 'ffmpeg') {
+const brandIntro = job.introPath && existsSync(job.introPath) ? job.introPath : null;
+const brandOutro = job.outroPath && existsSync(job.outroPath) ? job.outroPath : null;
+
+if (brandIntro && brandOutro) {
+  // real branded intro/outro videos (logo, brand motion) — the best option
+  console.log('[5/6] assembling (brand intro/outro)…');
+  sh('python3', [join(HERE, 'build_final.py'), zoom, vo, final, brandIntro, brandOutro], { env: bfEnv });
+} else if (job.cards === 'ffmpeg') {
   console.log('[5/6] assembling (ffmpeg cards)…');
   Object.assign(bfEnv, {
-    CARD_INTRO_TITLE: plan.title, CARD_INTRO_TAGLINE: plan.tagline,
+    CARD_INTRO_TITLE: job.brandName || plan.title, CARD_INTRO_TAGLINE: plan.tagline,
     CARD_INTRO_KICKER: (plan.kicker || plan.tagline || '').toUpperCase(),
     CARD_OUTRO_TITLE: 'Start for free', CARD_OUTRO_TAGLINE: host, CARD_OUTRO_KICKER: 'GET STARTED TODAY',
   });
@@ -101,19 +109,33 @@ if (job.cards === 'ffmpeg') {
 } else {
   console.log('[5/6] rendering branded cards…');
   const intro = join(OUT, `${NAME}_intro.mp4`), outro = join(OUT, `${NAME}_outro.mp4`);
-  const A = '#7C4DFF', A2 = '#B49CFF';
+  const A = job.accent || '#7C4DFF', A2 = '#B49CFF';
   sh('npx', ['remotion', 'render', 'src/index.tsx', 'BrandCard', intro, '--log=error',
-    `--props=${JSON.stringify({ kind: 'intro', title: plan.title, tagline: plan.tagline, kicker: (plan.kicker || plan.tagline || '').toUpperCase(), accent: A, accent2: A2, durationInSeconds: 3.0 })}`], { cwd: REMOTION });
+    `--props=${JSON.stringify({ kind: 'intro', title: job.brandName || plan.title, tagline: plan.tagline, kicker: (plan.kicker || plan.tagline || '').toUpperCase(), accent: A, accent2: A2, durationInSeconds: 3.0 })}`], { cwd: REMOTION });
   sh('npx', ['remotion', 'render', 'src/index.tsx', 'BrandCard', outro, '--log=error',
     `--props=${JSON.stringify({ kind: 'outro', title: 'Start for free', tagline: host, kicker: 'GET STARTED TODAY', accent: A, accent2: A2, durationInSeconds: 3.4 })}`], { cwd: REMOTION });
   sh('python3', [join(HERE, 'build_final.py'), zoom, vo, final, intro, outro], { env: bfEnv });
 }
 console.log(`   16:9 -> ${final} (${dur(final).toFixed(1)}s)`);
 
+const acc = job.accent ? '0x' + String(job.accent).replace('#', '') : '0x7C4DFF';
+const navy = job.navy ? '0x' + String(job.navy).replace('#', '') : '0x12202E';
+
 // ---- 7. aspect-ratio distribution pack (9:16 + 1:1) ----
 if (job.aspectPack !== false) {
-  console.log('[7/7] aspect pack (9:16 + 1:1)…');
-  try { sh('python3', [join(HERE, 'reframe.py'), final, OUT, NAME, plan.title, '0x7C4DFF'], { env: bfEnv }); }
+  console.log('[7/8] aspect pack (9:16 + 1:1)…');
+  try { sh('python3', [join(HERE, 'reframe.py'), final, OUT, NAME, job.brandName || plan.title, acc], { env: bfEnv }); }
   catch (e) { console.error('aspect pack skipped:', e.message); }
+}
+
+// ---- 8. branded thumbnail / poster ----
+if (job.thumbnail !== false) {
+  console.log('[8/8] branded thumbnail…');
+  try {
+    const thumb = join(OUT, `${NAME}_thumb.png`);
+    const args = [join(HERE, 'thumbnail.py'), thumb, job.brandName || plan.title, plan.tagline || '', acc, navy];
+    if (job.logoPath && existsSync(job.logoPath)) args.push(job.logoPath);
+    sh('python3', args, { env: bfEnv });
+  } catch (e) { console.error('thumbnail skipped:', e.message); }
 }
 console.log(`\n✓ done — ${final}`);
