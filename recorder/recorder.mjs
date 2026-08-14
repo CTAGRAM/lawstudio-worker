@@ -222,10 +222,11 @@ async function autoExplore(page) {
 }
 
 async function main() {
-  const browser = await chromium.launch({ headless: true, args: ['--force-color-profile=srgb'] });
+  const browser = await chromium.launch({ headless: true,
+    args: ['--force-color-profile=srgb', '--disable-dev-shm-usage', '--disable-gpu', '--no-sandbox'] });
   const context = await browser.newContext({
     viewport: { width: VW, height: VH },
-    deviceScaleFactor: 2,                       // retina render -> crisp text after zoom
+    deviceScaleFactor: Number(process.env.DEVICE_SCALE || 2),   // 1 in cloud (memory); 2 = retina-crisp locally
     recordVideo: { dir: tmpDir, size: { width: VW, height: VH } },
     ignoreHTTPSErrors: true,
   });
