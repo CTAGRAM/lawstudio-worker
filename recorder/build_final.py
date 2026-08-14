@@ -126,13 +126,16 @@ open(ass, 'w', encoding='utf-8').write(ASS_HEAD + '\n'.join(ev) + '\n')
 print(f'{len(caps)} captions', flush=True)
 
 # ---- body: VO (delayed) + burned captions ----
+# pad the VO to EXACTLY the body length (apad with no bound + -shortest makes
+# ffmpeg buffer an unbounded muxing queue -> OOM/-9 in the container)
+bd = dur(BODY)
 bodyF = os.path.join(TMP, '_bodyF.mp4')
 run(['ffmpeg', '-nostdin', '-y', '-i', BODY, '-i', VO,
      '-filter_complex',
      f"[0:v]ass={ass}:fontsdir={FONTS}[v];"
      f"[1:a]adelay={int(VO_OFFSET*1000)}|{int(VO_OFFSET*1000)},aresample=async=1,"
-     f"loudnorm=I=-16:TP=-1.5:LRA=11,apad[a]",
-     '-map', '[v]', '-map', '[a]', '-r', '30',
+     f"loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur={bd:.2f}[a]",
+     '-map', '[v]', '-map', '[a]', '-r', '30', '-max_muxing_queue_size', '1024',
      '-c:v', 'libx264', '-crf', '19', '-preset', 'medium', '-pix_fmt', 'yuv420p',
      '-c:a', 'aac', '-b:a', '192k', '-shortest', bodyF])
 
