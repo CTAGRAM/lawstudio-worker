@@ -21,9 +21,12 @@ const sh = (cmd, args, opts = {}) => { console.log('· ' + cmd + ' ' + args.slic
 const dur = (f) => Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).toString().trim());
 
 function key(k) {
-  const m = readFileSync('/Users/rudra/OpenMontage/.env', 'utf8').match(new RegExp('^' + k + '=(.*)$', 'm'));
-  const v = m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
-  return v && !v.startsWith('#') ? v : null;
+  if (process.env[k] && !process.env[k].startsWith('#')) return process.env[k];   // Koyeb / cloud
+  try {
+    const m = readFileSync('/Users/rudra/OpenMontage/.env', 'utf8').match(new RegExp('^' + k + '=(.*)$', 'm'));
+    const v = m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
+    return v && !v.startsWith('#') ? v : null;
+  } catch { return null; }
 }
 
 // ---- 1. AI flow plan ----
