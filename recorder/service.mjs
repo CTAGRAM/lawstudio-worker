@@ -70,7 +70,7 @@ async function handle(v) {
   }
   // branded thumbnail -> asset + progress.thumbnail
   let thumbnail = null;
-  const thumb = join(out, `${name}_thumb.png`);
+  const thumb = join(out, `${name}_thumb.jpg`);
   if (existsSync(thumb)) {
     try { const ta = await uploadAsset(thumb, 'graphic', { title: `${v.title} thumbnail`, brand_id: v.brand_id, tags: ['thumbnail', 'browsercast'] });
       thumbnail = publicUrl(ta.storage_path); } catch (e) { log('thumbnail upload skipped', e.message); }

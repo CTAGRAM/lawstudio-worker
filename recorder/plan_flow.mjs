@@ -55,7 +55,8 @@ async function extract(page) {
 
 async function askLLM(dom, shotB64) {
   const sys = `You are a senior product-marketing video director. Given a SaaS web page (a screenshot + its visible clickable elements + headings), design a short, engaging guided walkthrough video (a "SaaS explainer") that shows a viewer what the product does and how to use it.
-Return STRICT JSON: {"title": str, "tagline": str, "kicker": str, "steps": [ {"do": "click|hover|scroll|wait|cue", "text"?: str, "note"?: str, "times"?: int, "ms"?: int} ], "narration": str }
+Return STRICT JSON: {"title": str, "tagline": str, "kicker": str, "steps": [ {"do": "click|hover|scroll|wait|cue", "text"?: str, "note"?: str, "times"?: int, "ms"?: int} ], "narration": str, "thumbHeadline": str, "thumbSub": str }
+- thumbHeadline = a punchy 2-4 word hook for a YouTube thumbnail (benefit-driven, e.g. "AUTOMATE YOUR SEO", "DRAFT CONTRACTS IN MINUTES"). thumbSub = a short 3-5 word label (e.g. "AI agent for law firms").
 Rules:
 - title = the product/brand name (short). tagline = <=5 words. kicker = a short all-caps eyebrow.
 - ${MAXS} steps max. Use ONLY the exact "text" strings from the provided elements for click/hover targets — never invent selectors. Prefer nav items, primary CTAs, and feature sections. Interleave a couple of "scroll" steps (with "times":3) to reveal sections, and "cue" steps (note only) to mark narration beats. Start with a "cue" that introduces the product.

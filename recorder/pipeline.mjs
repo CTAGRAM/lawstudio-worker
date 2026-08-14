@@ -131,14 +131,27 @@ if (job.aspectPack !== false) {
   catch (e) { console.error('aspect pack skipped:', e.message); }
 }
 
-// ---- 8. branded thumbnail / poster ----
+// ---- 8. branded thumbnail: AI-designed (nano-banana-pro) from a real product
+//         frame + logo + a content-aware headline; flat card as fallback ----
 if (job.thumbnail !== false) {
-  console.log('[8/8] branded thumbnail…');
+  console.log('[8/8] AI thumbnail…');
+  const thumb = join(OUT, `${NAME}_thumb.jpg`);
+  const headline = plan.thumbHeadline || plan.kicker || plan.tagline || plan.title || 'Watch the walkthrough';
+  const sub = plan.thumbSub || plan.tagline || job.brandName || host;
   try {
-    const thumb = join(OUT, `${NAME}_thumb.png`);
-    const args = [join(HERE, 'thumbnail.py'), thumb, job.brandName || plan.title, plan.tagline || '', acc, navy];
-    if (job.logoPath && existsSync(job.logoPath)) args.push(job.logoPath);
-    sh('python3', args, { env: bfEnv });
+    // a clean product frame ~40% through the zoomed body
+    const frame = join(OUT, `${NAME}_frame.jpg`);
+    sh('ffmpeg', ['-nostdin', '-y', '-ss', String(Math.max(2, bodyDur * 0.4)), '-i', zoom,
+      '-frames:v', '1', '-q:v', '3', frame], { env: bfEnv, stdio: ['ignore', 'ignore', 'ignore'] });
+    try {
+      sh('node', [join(HERE, 'thumbnail_ai.mjs'), thumb, headline, sub,
+        acc.replace('0x', '#'), navy.replace('0x', '#'), job.logoPath || '', frame], { env: bfEnv });
+    } catch (e) {
+      console.error('AI thumbnail failed, using flat card:', String(e.message).slice(0, 120));
+      const args = [join(HERE, 'thumbnail.py'), thumb, job.brandName || plan.title, plan.tagline || '', acc, navy];
+      if (job.logoPath && existsSync(job.logoPath)) args.push(job.logoPath);
+      sh('python3', args, { env: bfEnv });
+    }
   } catch (e) { console.error('thumbnail skipped:', e.message); }
 }
 console.log(`\n✓ done — ${final}`);
