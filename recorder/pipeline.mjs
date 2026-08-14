@@ -67,7 +67,7 @@ const narration = fit(plan.narration || `${plan.title}. ${plan.tagline}.`, Math.
 const vo = P('vo.wav');
 {
   const g = key('GEMINI_API_KEY') || key('GOOGLE_API_KEY');
-  const voice = job.voice || 'Charon';
+  const voice = job.voice || 'Puck';
   const r = execFileSync('curl', ['-s', '-X', 'POST',
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${g}`,
     '-H', 'Content-Type: application/json', '-d', JSON.stringify({
