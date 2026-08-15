@@ -273,7 +273,7 @@ async function main() {
   const mp4 = join(outDir, `${name}.mp4`);
   if (webm && existsSync(webm)) {
     execFileSync('ffmpeg', ['-nostdin', '-y', '-i', webm, '-c:v', 'libx264', '-crf', '19',
-      '-preset', 'medium', '-pix_fmt', 'yuv420p', '-r', '30', '-movflags', '+faststart', mp4],
+      '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-r', '30', '-movflags', '+faststart', mp4],
       { stdio: 'ignore' });
   }
   const dur = webm ? Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',

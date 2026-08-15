@@ -136,7 +136,7 @@ run(['ffmpeg', '-nostdin', '-y', '-i', BODY, '-i', VO,
      f"[1:a]adelay={int(VO_OFFSET*1000)}|{int(VO_OFFSET*1000)},aresample=async=1,"
      f"loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur={bd:.2f}[a]",
      '-map', '[v]', '-map', '[a]', '-r', '30', '-max_muxing_queue_size', '1024',
-     '-c:v', 'libx264', '-crf', '19', '-preset', 'medium', '-pix_fmt', 'yuv420p',
+     '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
      '-c:a', 'aac', '-b:a', '192k', '-shortest', bodyF])
 
 
@@ -155,7 +155,7 @@ def card(path, secs, title, tagline, kicker=None):
     run(['ffmpeg', '-nostdin', '-y',
          '-f', 'lavfi', '-i', f'gradients=s=1920x1080:c0=0x17122E:c1=0x0A0713:x0=0:y0=0:x1=1920:y1=1080:d={secs}',
          '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-vf', vf, '-t', str(secs),
-         '-c:v', 'libx264', '-crf', '19', '-preset', 'medium', '-pix_fmt', 'yuv420p',
+         '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
          '-c:a', 'aac', '-b:a', '192k', '-shortest', path])
 
 
@@ -173,11 +173,11 @@ def norm_card(inp, path):
     scale = 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x0A0713,setsar=1'
     if has_audio(inp):
         run(['ffmpeg', '-nostdin', '-y', '-i', inp, '-map', '0:v:0', '-map', '0:a:0', '-vf', scale, '-r', '30',
-             '-c:v', 'libx264', '-crf', '19', '-preset', 'medium', '-pix_fmt', 'yuv420p',
+             '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
              '-ar', '48000', '-ac', '2', '-c:a', 'aac', '-b:a', '192k', path])
     else:
         run(['ffmpeg', '-nostdin', '-y', '-i', inp, '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
-             '-map', '0:v', '-map', '1:a', '-vf', scale, '-r', '30', '-c:v', 'libx264', '-crf', '19', '-preset', 'medium',
+             '-map', '0:v', '-map', '1:a', '-vf', scale, '-r', '30', '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast',
              '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-shortest', path])
 
 
@@ -197,6 +197,6 @@ else:
 # ---- concat intro + body + outro ----
 run(['ffmpeg', '-nostdin', '-y', '-i', intro, '-i', bodyF, '-i', outro,
      '-filter_complex', '[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]',
-     '-map', '[v]', '-map', '[a]', '-r', '30', '-c:v', 'libx264', '-crf', '19', '-preset', 'medium',
+     '-map', '[v]', '-map', '[a]', '-r', '30', '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast',
      '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', OUT])
 print(f'wrote {OUT}  ({dur(OUT):.1f}s)', flush=True)

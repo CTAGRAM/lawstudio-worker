@@ -48,7 +48,7 @@ async function handle(v) {
   }
 
   const job = { url: pr.url, goal: pr.goal || '', name, outDir: out,
-    cards: 'ffmpeg', captions: 'text', fontsDir: FONTS, aspectPack: pr.aspectPack !== false, ...bj };
+    cards: 'ffmpeg', captions: 'text', fontsDir: FONTS, aspectPack: pr.aspectPack === true, ...bj };
   const jobPath = join(out, 'job.json');
   writeFileSync(jobPath, JSON.stringify(job));
 

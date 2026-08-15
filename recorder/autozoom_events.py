@@ -86,7 +86,7 @@ ff = subprocess.Popen(
     ['ffmpeg', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24',
      '-s', f'{W}x{H}', '-r', f'{FPS}', '-i', 'pipe:0',
      '-i', src, '-map', '0:v', '-map', '1:a?', '-c:v', 'libx264', '-crf', '19',
-     '-preset', 'medium', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest',
+     '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest',
      '-movflags', '+faststart', out],
     stdin=subprocess.PIPE)
 
@@ -102,7 +102,7 @@ for f in range(N):
         x0 = min(max(cxt[f] - cw / 2, 0), W - cw)
         y0 = min(max(cyt[f] - ch / 2, 0), H - ch)
         crop = fr[int(y0):int(y0 + ch), int(x0):int(x0 + cw)]
-        outf = cv2.resize(crop, (W, H), interpolation=cv2.INTER_CUBIC)
+        outf = cv2.resize(crop, (W, H), interpolation=cv2.INTER_LINEAR)
     ff.stdin.write(outf.tobytes())
 ff.stdin.close()
 ff.wait()

@@ -59,7 +59,7 @@ json.dump(meta2, open(out_ev, 'w'), indent=2)
 # stream kept frames to ffmpeg at the SAME fps -> idle spans are now faster
 ff = subprocess.Popen(
     ['ffmpeg', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{W}x{H}',
-     '-r', f'{FPS}', '-i', 'pipe:0', '-c:v', 'libx264', '-crf', '19', '-preset', 'medium',
+     '-r', f'{FPS}', '-i', 'pipe:0', '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast',
      '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out], stdin=subprocess.PIPE)
 for f in range(N):
     ok, fr = cap.read()

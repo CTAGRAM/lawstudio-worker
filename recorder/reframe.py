@@ -46,7 +46,7 @@ def reframe(W, H, tag):
     subprocess.run(['ffmpeg', '-nostdin', '-y', '-f', 'lavfi', '-i',
         f'gradients=s={W}x{H}:c0=0x17122E:c1=0x0A0713:d={DUR:.2f}', '-i', SRC,
         '-filter_complex', fc, '-map', omap, '-map', '1:a?', '-r', '30',
-        '-c:v', 'libx264', '-crf', '20', '-preset', 'medium', '-pix_fmt', 'yuv420p',
+        '-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', out],
         check=True, capture_output=True)
     print(f'  {tag}: {out}', flush=True)
