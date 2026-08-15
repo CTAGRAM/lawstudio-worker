@@ -23,7 +23,7 @@ async function rest(method, path, { params, body, prefer } = {}) {
 // claim the next queued browsercast video (optimistic lock: only one worker wins)
 export async function claimBrowsercast() {
   const rows = await rest('GET', 'videos', {
-    params: { status: 'eq.queued', 'progress->>via': 'eq.browsercast',
+    params: { status: 'eq.queued', 'progress->>via': 'in.(browsercast,upload)',
       order: 'created_at.asc', limit: '1', select: 'id,title,brand_id,progress' },
   });
   if (!rows || !rows.length) return null;
@@ -43,7 +43,7 @@ export async function updateVideo(id, patch) {
 // instance (only one recorder runs at a time, so any 'running' one is an orphan)
 export async function recoverOrphans() {
   const rows = await rest('PATCH', 'videos', {
-    params: { status: 'eq.running', 'progress->>via': 'eq.browsercast' },
+    params: { status: 'eq.running', 'progress->>via': 'in.(browsercast,upload)' },
     body: { status: 'queued' }, prefer: 'return=representation' });
   return rows ? rows.length : 0;
 }

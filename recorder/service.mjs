@@ -26,10 +26,25 @@ function runPipeline(jobPath) {
 
 async function handle(v) {
   const pr = v.progress || {};
-  log(`claimed video ${v.id} — ${pr.url}`);
+  const isUpload = pr.via === 'upload';
+  log(`claimed video ${v.id} — ${isUpload ? 'upload ' + (pr.source || '') : pr.url}`);
   const name = 'bc_' + v.id.slice(0, 8);
   const out = join(WORKDIR, v.id);
   mkdirSync(out, { recursive: true });
+
+  // uploaded screen recording: pull the source clip down so the pipeline can
+  // auto-edit it (pause-cut + zoom) and add AI voice + subtitles + branding.
+  let uploadPath = null;
+  if (isUpload) {
+    uploadPath = join(out, 'source.mp4');
+    const src = pr.source || pr.source_url;
+    if (!src) throw new Error('upload video has no progress.source');
+    const url = /^https?:/.test(src) ? src : publicUrl(src, pr.source_bucket || 'assets');
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`source download ${r.status}`);
+    writeFileSync(uploadPath, Buffer.from(await r.arrayBuffer()));
+    log(`downloaded source recording -> ${uploadPath}`);
+  }
 
   // brand assets: real intro/outro videos, logo, palette accent, narrator voice
   const brand = await getBrand(v.brand_id).catch(() => null);
@@ -47,7 +62,7 @@ async function handle(v) {
     log(`brand ${brand.name}: accent=${bj.accent} voice=${bj.voice} intro=${!!bj.introPath} outro=${!!bj.outroPath} logo=${!!bj.logoPath}`);
   }
 
-  const job = { url: pr.url, goal: pr.goal || '', name, outDir: out,
+  const job = { url: pr.url, uploadPath, goal: pr.goal || '', name, outDir: out,
     cards: 'ffmpeg', captions: 'text', fontsDir: FONTS, aspectPack: pr.aspectPack === true, ...bj };
   // custom thumbnail controls (from the dashboard)
   if (pr.thumbPrompt) job.thumbPrompt = pr.thumbPrompt;

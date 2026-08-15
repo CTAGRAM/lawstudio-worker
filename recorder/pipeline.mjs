@@ -29,55 +29,68 @@ function key(k) {
   } catch { return null; }
 }
 
-// ---- 1. AI flow plan ----
-console.log('\n[1/6] planning walkthrough…');
-const planJob = P('planjob.json');
-writeFileSync(planJob, JSON.stringify({ url: job.url, auth: job.auth, goal: job.goal, name: NAME, outDir: OUT,
-  brand: job.brandName || null, brandDesc: job.brandDesc || null }));
-sh('node', [join(HERE, 'plan_flow.mjs'), planJob]);
-const plan = JSON.parse(readFileSync(P('plan.json'), 'utf8'));
-console.log(`   "${plan.title}" — ${plan.steps.length} steps`);
-
-// ---- 1b. TTS the per-click narration FIRST, so recording can pause per click ----
+let plan, beats = null, events = null, zoom, bodyDur;
 const beatsFile = P('beats.json');
-let beats = null;
-try {
-  sh('node', [join(HERE, 'sync_vo.mjs'), 'prepare', P('plan.json'), join(OUT, 'beataudio'), beatsFile],
-    { env: { ...process.env, VOICE_NAME: job.voice || 'Puck' } });
-  beats = JSON.parse(readFileSync(beatsFile, 'utf8'));
-  console.log(`   ${beats.length} narration lines prepared`);
-} catch (e) { console.error('beat prep failed (continuous VO fallback):', String(e.message).slice(0, 100)); }
 
-// ---- 2. record — hold on each click for the length of that line's narration ----
-console.log('[2/6] recording the product…');
-const beatByAt = {};
-if (beats) for (const b of beats) if (b.at && b.at !== 'start' && b.at !== 'end') beatByAt[String(b.at).toLowerCase()] = b;
-const steps = [];
-for (const s of plan.steps) {
-  steps.push(s);
-  if (s.do === 'click' || s.do === 'hover') {
-    const b = s.text ? beatByAt[String(s.text).toLowerCase()] : null;
-    steps.push({ do: 'wait', ms: Math.min(b ? Math.round(b.durMs + 500) : 1100, 12000) });
+if (job.uploadPath) {
+  // ===== UPLOAD MODE: an uploaded screen recording (no click log) =====
+  console.log('\n[upload] watching your recording (vision) + auto-editing…');
+  sh('node', [join(HERE, 'vision_script.mjs'), job.uploadPath, P('plan.json'),
+    job.brandName || '', job.brandDesc || '', job.goal || '']);
+  plan = JSON.parse(readFileSync(P('plan.json'), 'utf8'));
+  zoom = join(OUT, `${NAME}_zoom.mp4`);
+  sh('python3', [join(HERE, 'upload_edit.py'), job.uploadPath, zoom]);   // pause-cut + activity zoom
+  bodyDur = dur(zoom);
+  console.log(`   "${plan.title}" — auto-edited to ${bodyDur.toFixed(1)}s`);
+} else {
+  // ===== URL MODE: drive the browser, log clicks, per-click synced VO =====
+  console.log('\n[1/6] planning walkthrough…');
+  const planJob = P('planjob.json');
+  writeFileSync(planJob, JSON.stringify({ url: job.url, auth: job.auth, goal: job.goal, name: NAME, outDir: OUT,
+    brand: job.brandName || null, brandDesc: job.brandDesc || null }));
+  sh('node', [join(HERE, 'plan_flow.mjs'), planJob]);
+  plan = JSON.parse(readFileSync(P('plan.json'), 'utf8'));
+  console.log(`   "${plan.title}" — ${plan.steps.length} steps`);
+
+  // 1b. TTS the per-click narration FIRST, so recording can pause per click
+  try {
+    sh('node', [join(HERE, 'sync_vo.mjs'), 'prepare', P('plan.json'), join(OUT, 'beataudio'), beatsFile],
+      { env: { ...process.env, VOICE_NAME: job.voice || 'Puck' } });
+    beats = JSON.parse(readFileSync(beatsFile, 'utf8'));
+    console.log(`   ${beats.length} narration lines prepared`);
+  } catch (e) { console.error('beat prep failed (continuous VO fallback):', String(e.message).slice(0, 100)); }
+
+  // 2. record — hold on each click for the length of that line's narration
+  console.log('[2/6] recording the product…');
+  const beatByAt = {};
+  if (beats) for (const b of beats) if (b.at && b.at !== 'start' && b.at !== 'end') beatByAt[String(b.at).toLowerCase()] = b;
+  const steps = [];
+  for (const s of plan.steps) {
+    steps.push(s);
+    if (s.do === 'click' || s.do === 'hover') {
+      const b = s.text ? beatByAt[String(s.text).toLowerCase()] : null;
+      steps.push({ do: 'wait', ms: Math.min(b ? Math.round(b.durMs + 500) : 1100, 12000) });
+    }
   }
-}
-const recJob = P('recjob.json');
-writeFileSync(recJob, JSON.stringify({ url: job.url, auth: job.auth, name: NAME, outDir: OUT, steps }));
-sh('node', [join(HERE, 'recorder.mjs'), recJob]);
-let body = P('mp4'), events = P('events.json');
+  const recJob = P('recjob.json');
+  writeFileSync(recJob, JSON.stringify({ url: job.url, auth: job.auth, name: NAME, outDir: OUT, steps }));
+  sh('node', [join(HERE, 'recorder.mjs'), recJob]);
+  let body = P('mp4'); events = P('events.json');
 
-// ---- 2b. idle speed-up — ONLY when not synced (synced pauses are intentional) ----
-if (!beats) {
-  console.log('[2b] trimming dead time…');
-  const fastBody = join(OUT, `${NAME}_fast.mp4`), fastEvents = join(OUT, `${NAME}_fast.events.json`);
-  try { sh('python3', [join(HERE, 'speedup_idle.py'), events, body, fastBody, fastEvents]); body = fastBody; events = fastEvents; } catch (e) { console.error('speedup skipped:', e.message); }
-}
-const bodyDur = dur(body);
-console.log(`   body ${bodyDur.toFixed(1)}s`);
+  // 2b. idle speed-up — ONLY when not synced (synced pauses are intentional)
+  if (!beats) {
+    console.log('[2b] trimming dead time…');
+    const fastBody = join(OUT, `${NAME}_fast.mp4`), fastEvents = join(OUT, `${NAME}_fast.events.json`);
+    try { sh('python3', [join(HERE, 'speedup_idle.py'), events, body, fastBody, fastEvents]); body = fastBody; events = fastEvents; } catch (e) { console.error('speedup skipped:', e.message); }
+  }
+  bodyDur = dur(body);
+  console.log(`   body ${bodyDur.toFixed(1)}s`);
 
-// ---- 3. event-driven auto-zoom ----
-console.log('[3/6] auto-zoom on logged clicks…');
-const zoom = join(OUT, `${NAME}_zoom.mp4`);
-sh('python3', [join(HERE, 'autozoom_events.py'), events, body, zoom]);
+  // 3. event-driven auto-zoom
+  console.log('[3/6] auto-zoom on logged clicks…');
+  zoom = join(OUT, `${NAME}_zoom.mp4`);
+  sh('python3', [join(HERE, 'autozoom_events.py'), events, body, zoom]);
+}
 
 // ---- 4. tight per-click voiceover: one line per action, timed to each click ----
 console.log('[4/6] voiceover (per-click sync)…');
@@ -109,7 +122,7 @@ if (!synced) {
 
 // ---- 5/6. cards + assemble ----
 // cards:'remotion' (local, premium) or 'ffmpeg' (lean cloud service, no Node/Remotion).
-const host = new URL(job.url).host.replace(/^www\./, '');
+const host = job.url ? new URL(job.url).host.replace(/^www\./, '') : (job.brandName || plan.title || 'watch the walkthrough');
 const final = join(OUT, `${NAME}-explainer.mp4`);
 const bfEnv = { ...process.env };
 if (job.fontsDir) bfEnv.FONTS_DIR = job.fontsDir;
