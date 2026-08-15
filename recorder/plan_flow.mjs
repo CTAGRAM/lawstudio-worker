@@ -54,16 +54,17 @@ async function extract(page) {
 }
 
 async function askLLM(dom, shotB64) {
-  const sys = `You are a senior product-marketing video director. Given a SaaS web page (a screenshot + its visible clickable elements + headings), design a short, engaging guided walkthrough video (a "SaaS explainer") that shows a viewer what the product does and how to use it.
+  const brandLine = job.brand ? `\nThis walkthrough is for the brand "${job.brand}"${job.brandDesc ? ` (${job.brandDesc})` : ''}. Speak in that brand's voice, refer to the product by its real name, and keep everything specific to what THIS product actually does — never generic filler.` : '';
+  const sys = `You are a senior product-marketing video director. Given a SaaS web page (a screenshot + its visible clickable elements + headings), design an engaging guided walkthrough video that shows a real user exactly what the product does and how to use it, step by step.${brandLine}
 Return STRICT JSON: {"title": str, "tagline": str, "kicker": str, "steps": [ {"do": "click|hover|scroll|wait|cue", "text"?: str, "note"?: str, "times"?: int, "ms"?: int} ], "narration": str, "thumbHeadline": str, "thumbSub": str }
-- thumbHeadline = a punchy 2-4 word hook for a YouTube thumbnail (benefit-driven, e.g. "AUTOMATE YOUR SEO", "DRAFT CONTRACTS IN MINUTES"). thumbSub = a short 3-5 word label (e.g. "AI agent for law firms").
+- thumbHeadline = a punchy 2-4 word hook for a YouTube thumbnail (benefit-driven, specific to THIS product). thumbSub = a short 3-5 word label.
 Rules:
 - title = the product/brand name (short). tagline = <=5 words. kicker = a short all-caps eyebrow.
-- ${MAXS} steps max. Use ONLY the exact "text" strings from the provided elements for click/hover targets — never invent selectors. Prefer nav items, primary CTAs, and feature sections. Interleave a couple of "scroll" steps (with "times":3) to reveal sections, and "cue" steps (note only) to mark narration beats. Start with a "cue" that introduces the product.
+- Use ${MAXS}-${MAXS + 3} steps — a proper tour, not a teaser. Use ONLY the exact "text" strings from the provided elements for click/hover targets — never invent selectors. Walk through the MAIN features in a logical order (nav items, feature tabs/sections). Interleave several "scroll" steps (with "times":3) to reveal sections, and "cue" steps (note only) to mark narration beats. Start with a "cue" that introduces the product.
 - Keep it safe: do NOT click destructive actions, logout, or delete, and do NOT click external/social links.
-- IMPORTANT: do NOT click buttons that open a signup / trial / lead-capture / consultation FORM or MODAL (e.g. "Try for Free", "Sign up", "Get started", "Book a demo", "Free consultation", "Start now") — those popups block the whole view. Showcase the product through nav menus, dropdowns, feature tabs, and scrolling to feature sections instead. Mention the free trial only in the narration, not by clicking it.
-- narration = one cohesive spoken voiceover script (2nd person, calm and credible, NOT salesy), ~55-80 words, matching the walkthrough order. It should sound like a professional product explainer.
-- Goal from the user (may be empty): ${job.goal || '(none — give a strong general overview)'}`;
+- IMPORTANT: do NOT click buttons that open a signup / trial / lead-capture / consultation FORM or MODAL (e.g. "Try for Free", "Sign up", "Get started", "Book a demo", "Free consultation") — those popups block the whole view. Showcase the product through nav menus, dropdowns, feature tabs, and scrolling instead. Mention the free trial only in the narration.
+- narration = one cohesive spoken voiceover, ~120-160 words, that CLOSELY FOLLOWS the on-screen actions in order — describe what the viewer is seeing and doing at each step ("Here on the dashboard you'll see…", "Next, open…", "This section lets you…"), like a friendly expert guiding a brand-new user. Use SIMPLE, CLEAR, everyday English: short sentences, no jargon, no hype. It must feel relevant to exactly what is happening on screen.
+- Goal from the user (may be empty): ${job.goal || '(none — give a thorough, helpful walkthrough of the main features)'}`;
   const user = `PAGE: ${dom.title} <${dom.url}>\nHEADINGS: ${dom.headings.join(' | ')}\nCLICKABLE ELEMENTS (text, top-y): ${dom.elements.map(e => `"${e.text}"`).join(', ')}`;
   const body = {
     systemInstruction: { parts: [{ text: sys }] },

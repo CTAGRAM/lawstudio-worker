@@ -39,6 +39,15 @@ export async function updateVideo(id, patch) {
   return rest('PATCH', 'videos', { params: { id: `eq.${id}` }, body: patch, prefer: 'return=representation' });
 }
 
+// on startup, requeue browsercast videos left 'running' by a crashed/restarted
+// instance (only one recorder runs at a time, so any 'running' one is an orphan)
+export async function recoverOrphans() {
+  const rows = await rest('PATCH', 'videos', {
+    params: { status: 'eq.running', 'progress->>via': 'eq.browsercast' },
+    body: { status: 'queued' }, prefer: 'return=representation' });
+  return rows ? rows.length : 0;
+}
+
 export async function getBrand(id) {
   if (!id) return null;
   const rows = await rest('GET', 'brands', { params: { id: `eq.${id}`, limit: '1' } });

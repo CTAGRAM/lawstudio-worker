@@ -6,7 +6,7 @@ import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { execFileSync, execFile } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { claimBrowsercast, updateVideo, uploadAsset, publicUrl, getBrand, downloadAsset } from './supa.mjs';
+import { claimBrowsercast, updateVideo, uploadAsset, publicUrl, getBrand, downloadAsset, recoverOrphans } from './supa.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FONTS = process.env.FONTS_DIR || join(HERE, 'fonts');
@@ -39,6 +39,7 @@ async function handle(v) {
     bj.accent = pal.accent || null;      // e.g. Go Legal AI gold #f6bb54
     bj.navy = pal.navy || null;
     bj.brandName = brand.name || null;
+    bj.brandDesc = brand.niche || brand.director_who || null;
     bj.voice = brand.voice || null;      // per-brand narrator
     try { if (brand.intro_asset) bj.introPath = await downloadAsset(brand.intro_asset, join(out, 'brand_intro.mp4')); } catch (e) { log('intro dl skip', e.message); }
     try { if (brand.outro_asset) bj.outroPath = await downloadAsset(brand.outro_asset, join(out, 'brand_outro.mp4')); } catch (e) { log('outro dl skip', e.message); }
@@ -83,6 +84,7 @@ async function handle(v) {
 
 async function loop() {
   log(`recorder service up. fonts=${FONTS} poll=${POLL_MS}ms`);
+  try { const n = await recoverOrphans(); if (n) log(`requeued ${n} orphaned running video(s)`); } catch (e) { log('orphan recovery skipped', e.message); }
   for (;;) {
     let v = null;
     try { v = await claimBrowsercast(); } catch (e) { log('claim error', e.message); }

@@ -32,7 +32,8 @@ function key(k) {
 // ---- 1. AI flow plan ----
 console.log('\n[1/6] planning walkthrough…');
 const planJob = P('planjob.json');
-writeFileSync(planJob, JSON.stringify({ url: job.url, auth: job.auth, goal: job.goal, name: NAME, outDir: OUT }));
+writeFileSync(planJob, JSON.stringify({ url: job.url, auth: job.auth, goal: job.goal, name: NAME, outDir: OUT,
+  brand: job.brandName || null, brandDesc: job.brandDesc || null }));
 sh('node', [join(HERE, 'plan_flow.mjs'), planJob]);
 const plan = JSON.parse(readFileSync(P('plan.json'), 'utf8'));
 console.log(`   "${plan.title}" — ${plan.steps.length} steps`);
