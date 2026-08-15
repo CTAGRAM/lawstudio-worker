@@ -91,8 +91,15 @@ async function loop() {
     if (!v) { await new Promise(r => setTimeout(r, POLL_MS)); continue; }
     try { await handle(v); }
     catch (e) {
-      log(`✗ failed ${v.id}: ${e.message}`);
-      try { await updateVideo(v.id, { status: 'failed', progress: { ...(v.progress || {}), error: String(e.message).slice(0, 500) } }); } catch {}
+      const pr = v.progress || {}; const tries = (pr._tries || 0) + 1;
+      const transient = /closed|crash|timeout|net::|Target page|Navigation|ECONN|socket hang|Protocol error/i.test(String(e.message));
+      if (transient && tries < 3) {
+        log(`⟳ transient fail ${v.id} (attempt ${tries}) — requeue: ${String(e.message).slice(0, 80)}`);
+        try { await updateVideo(v.id, { status: 'queued', progress: { ...pr, _tries: tries } }); } catch {}
+      } else {
+        log(`✗ failed ${v.id}: ${e.message}`);
+        try { await updateVideo(v.id, { status: 'failed', progress: { ...pr, error: String(e.message).slice(0, 500) } }); } catch {}
+      }
     }
   }
 }

@@ -143,7 +143,7 @@ if (job.thumbnail !== false) {
     // a clean product frame ~40% through the zoomed body
     const frame = join(OUT, `${NAME}_frame.jpg`);
     sh('ffmpeg', ['-nostdin', '-y', '-ss', String(Math.max(2, bodyDur * 0.4)), '-i', zoom,
-      '-frames:v', '1', '-q:v', '3', frame], { env: bfEnv, stdio: ['ignore', 'ignore', 'ignore'] });
+      '-frames:v', '1', '-q:v', '3', frame], { env: bfEnv });
     try {
       sh('node', [join(HERE, 'thumbnail_ai.mjs'), thumb, headline, sub,
         acc.replace('0x', '#'), navy.replace('0x', '#'), job.logoPath || '', frame], { env: bfEnv });
