@@ -116,7 +116,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 POP = r"{\fad(90,60)\fscx86\fscy86\t(0,140,\fscx100\fscy100)}"
 
 vo_dur = dur(VO)
-caps = captions_from_text(E('CAPTION_TEXT'), vo_dur) if E('CAPTION_TEXT') else captions_from_whisper()
+if E('CAPTION_JSON') and os.path.exists(E('CAPTION_JSON')):
+    import json as _json
+    caps = [(c['start'], c['end'], c['text']) for c in _json.load(open(E('CAPTION_JSON')))]
+elif E('CAPTION_TEXT'):
+    caps = captions_from_text(E('CAPTION_TEXT'), vo_dur)
+else:
+    caps = captions_from_whisper()
 ass = os.path.join(TMP, '_caps.ass')
 ev = []
 for st, en, text in caps:
@@ -130,11 +136,14 @@ print(f'{len(caps)} captions', flush=True)
 # ffmpeg buffer an unbounded muxing queue -> OOM/-9 in the container)
 bd = dur(BODY)
 bodyF = os.path.join(TMP, '_bodyF.mp4')
+# VO_SYNCED: the VO is already full-length + timed + normalised (sync_vo.mjs) —
+# just resample. Otherwise delay to VO_OFFSET, normalise, and pad to body length.
+af = ("[1:a]aresample=async=1[a]" if E('VO_SYNCED')
+      else f"[1:a]adelay={int(VO_OFFSET*1000)}|{int(VO_OFFSET*1000)},aresample=async=1,"
+           f"loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur={bd:.2f}[a]")
 run(['ffmpeg', '-nostdin', '-y', '-i', BODY, '-i', VO,
      '-filter_complex',
-     f"[0:v]ass={ass}:fontsdir={FONTS}[v];"
-     f"[1:a]adelay={int(VO_OFFSET*1000)}|{int(VO_OFFSET*1000)},aresample=async=1,"
-     f"loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur={bd:.2f}[a]",
+     f"[0:v]ass={ass}:fontsdir={FONTS}[v];" + af,
      '-map', '[v]', '-map', '[a]', '-r', '30', '-max_muxing_queue_size', '1024',
      '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
      '-c:a', 'aac', '-b:a', '192k', '-shortest', bodyF])

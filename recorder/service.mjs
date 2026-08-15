@@ -49,6 +49,14 @@ async function handle(v) {
 
   const job = { url: pr.url, goal: pr.goal || '', name, outDir: out,
     cards: 'ffmpeg', captions: 'text', fontsDir: FONTS, aspectPack: pr.aspectPack === true, ...bj };
+  // custom thumbnail controls (from the dashboard)
+  if (pr.thumbPrompt) job.thumbPrompt = pr.thumbPrompt;
+  if (pr.thumbExample) {
+    try { const dest = join(out, 'thumb_example.jpg');
+      const url = /^https?:/.test(pr.thumbExample) ? pr.thumbExample : publicUrl(pr.thumbExample);
+      const r = await fetch(url); if (r.ok) { writeFileSync(dest, Buffer.from(await r.arrayBuffer())); job.thumbExample = dest; }
+    } catch (e) { log('thumb example dl skip', e.message); }
+  }
   const jobPath = join(out, 'job.json');
   writeFileSync(jobPath, JSON.stringify(job));
 

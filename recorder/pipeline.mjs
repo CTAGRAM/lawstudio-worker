@@ -38,19 +38,39 @@ sh('node', [join(HERE, 'plan_flow.mjs'), planJob]);
 const plan = JSON.parse(readFileSync(P('plan.json'), 'utf8'));
 console.log(`   "${plan.title}" — ${plan.steps.length} steps`);
 
-// ---- 2. record (steps from plan, small waits after interactions) ----
+// ---- 1b. TTS the per-click narration FIRST, so recording can pause per click ----
+const beatsFile = P('beats.json');
+let beats = null;
+try {
+  sh('node', [join(HERE, 'sync_vo.mjs'), 'prepare', P('plan.json'), join(OUT, 'beataudio'), beatsFile],
+    { env: { ...process.env, VOICE_NAME: job.voice || 'Puck' } });
+  beats = JSON.parse(readFileSync(beatsFile, 'utf8'));
+  console.log(`   ${beats.length} narration lines prepared`);
+} catch (e) { console.error('beat prep failed (continuous VO fallback):', String(e.message).slice(0, 100)); }
+
+// ---- 2. record — hold on each click for the length of that line's narration ----
 console.log('[2/6] recording the product…');
+const beatByAt = {};
+if (beats) for (const b of beats) if (b.at && b.at !== 'start' && b.at !== 'end') beatByAt[String(b.at).toLowerCase()] = b;
 const steps = [];
-for (const s of plan.steps) { steps.push(s); if (s.do === 'click' || s.do === 'hover') steps.push({ do: 'wait', ms: 1100 }); }
+for (const s of plan.steps) {
+  steps.push(s);
+  if (s.do === 'click' || s.do === 'hover') {
+    const b = s.text ? beatByAt[String(s.text).toLowerCase()] : null;
+    steps.push({ do: 'wait', ms: Math.min(b ? Math.round(b.durMs + 500) : 1100, 12000) });
+  }
+}
 const recJob = P('recjob.json');
 writeFileSync(recJob, JSON.stringify({ url: job.url, auth: job.auth, name: NAME, outDir: OUT, steps }));
 sh('node', [join(HERE, 'recorder.mjs'), recJob]);
 let body = P('mp4'), events = P('events.json');
 
-// ---- 2b. idle speed-up (cut dead time), remaps events ----
-console.log('[2b] trimming dead time…');
-const fastBody = join(OUT, `${NAME}_fast.mp4`), fastEvents = join(OUT, `${NAME}_fast.events.json`);
-try { sh('python3', [join(HERE, 'speedup_idle.py'), events, body, fastBody, fastEvents]); body = fastBody; events = fastEvents; } catch (e) { console.error('speedup skipped:', e.message); }
+// ---- 2b. idle speed-up — ONLY when not synced (synced pauses are intentional) ----
+if (!beats) {
+  console.log('[2b] trimming dead time…');
+  const fastBody = join(OUT, `${NAME}_fast.mp4`), fastEvents = join(OUT, `${NAME}_fast.events.json`);
+  try { sh('python3', [join(HERE, 'speedup_idle.py'), events, body, fastBody, fastEvents]); body = fastBody; events = fastEvents; } catch (e) { console.error('speedup skipped:', e.message); }
+}
 const bodyDur = dur(body);
 console.log(`   body ${bodyDur.toFixed(1)}s`);
 
@@ -59,31 +79,32 @@ console.log('[3/6] auto-zoom on logged clicks…');
 const zoom = join(OUT, `${NAME}_zoom.mp4`);
 sh('python3', [join(HERE, 'autozoom_events.py'), events, body, zoom]);
 
-// ---- 4. voiceover, fitted to the recording length, via Gemini TTS ----
-console.log('[4/6] voiceover…');
-function fit(text, targetWords) {
-  const sents = text.replace(/\s+/g, ' ').match(/[^.!?]+[.!?]+/g) || [text];
-  const out = []; let n = 0;
-  for (const s of sents) { const w = s.trim().split(/\s+/).length; if (n && n + w > targetWords * 1.15) break; out.push(s.trim()); n += w; }
-  return out.join(' ');
-}
-const narration = fit(plan.narration || `${plan.title}. ${plan.tagline}.`, Math.round(150 * bodyDur / 60));
+// ---- 4. tight per-click voiceover: one line per action, timed to each click ----
+console.log('[4/6] voiceover (per-click sync)…');
 const vo = P('vo.wav');
-{
+const capsFile = P('caps.json');
+let synced = false, narration = '';
+if (beats) {
+  try {
+    const out = sh('node', [join(HERE, 'sync_vo.mjs'), 'assemble', beatsFile, events, String(bodyDur), vo, capsFile]);
+    console.log('   ' + out.trim());
+    synced = true;
+  } catch (e) { console.error('sync assemble failed, continuous VO fallback:', String(e.message).slice(0, 120)); }
+}
+if (!synced) {
+  const fit = (text, tw) => { const s = text.replace(/\s+/g, ' ').match(/[^.!?]+[.!?]+/g) || [text]; const o = []; let n = 0; for (const x of s) { const w = x.trim().split(/\s+/).length; if (n && n + w > tw * 1.15) break; o.push(x.trim()); n += w; } return o.join(' '); };
+  narration = fit(plan.narration || `${plan.title}. ${plan.tagline}.`, Math.round(150 * bodyDur / 60));
   const g = key('GEMINI_API_KEY') || key('GOOGLE_API_KEY');
-  const voice = job.voice || 'Puck';
   const r = execFileSync('curl', ['-s', '-X', 'POST',
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${g}`,
     '-H', 'Content-Type: application/json', '-d', JSON.stringify({
-      contents: [{ parts: [{ text: `Narrate in a warm, friendly, professional BRITISH ENGLISH voice (en-GB, Received Pronunciation) — clear, natural and credible, never robotic. Do NOT use an American accent. Read this: ${narration}` }] }],
-      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
+      contents: [{ parts: [{ text: `Narrate in a warm, friendly, professional BRITISH ENGLISH voice (en-GB) — clear, natural, never robotic. NOT American. Read: ${narration}` }] }],
+      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: job.voice || 'Puck' } } } },
     })], { maxBuffer: 64 * 1024 * 1024 }).toString();
-  const j = JSON.parse(r);
-  const b64 = j.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+  const b64 = JSON.parse(r).candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
   if (!b64) throw new Error('TTS returned no audio: ' + r.slice(0, 200));
   const pcm = P('vo.pcm'); writeFileSync(pcm, Buffer.from(b64, 'base64'));
   execFileSync('ffmpeg', ['-nostdin', '-y', '-f', 's16le', '-ar', '24000', '-ac', '1', '-i', pcm, vo], { stdio: 'ignore' });
-  console.log(`   ${narration.split(/\s+/).length} words -> ${dur(vo).toFixed(1)}s VO`);
 }
 
 // ---- 5/6. cards + assemble ----
@@ -92,7 +113,8 @@ const host = new URL(job.url).host.replace(/^www\./, '');
 const final = join(OUT, `${NAME}-explainer.mp4`);
 const bfEnv = { ...process.env };
 if (job.fontsDir) bfEnv.FONTS_DIR = job.fontsDir;
-if (job.captions === 'text') bfEnv.CAPTION_TEXT = narration;
+if (synced) { bfEnv.CAPTION_JSON = capsFile; bfEnv.VO_SYNCED = '1'; }   // per-click timed VO + captions
+else if (job.captions === 'text') bfEnv.CAPTION_TEXT = narration;
 if (job.accent) bfEnv.ACCENT = '0x' + String(job.accent).replace('#', '');   // brand palette accent
 
 const brandIntro = job.introPath && existsSync(job.introPath) ? job.introPath : null;
@@ -139,6 +161,8 @@ if (job.thumbnail !== false) {
   const thumb = join(OUT, `${NAME}_thumb.jpg`);
   const headline = plan.thumbHeadline || plan.kicker || plan.tagline || plan.title || 'Watch the walkthrough';
   const sub = plan.thumbSub || plan.tagline || job.brandName || host;
+  if (job.thumbPrompt) bfEnv.THUMB_PROMPT = job.thumbPrompt;                                  // "by description"
+  if (job.thumbExample && existsSync(job.thumbExample)) bfEnv.THUMB_EXAMPLE = job.thumbExample; // "by example"
   try {
     // a clean product frame ~40% through the zoomed body
     const frame = join(OUT, `${NAME}_frame.jpg`);
