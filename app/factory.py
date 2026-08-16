@@ -610,8 +610,11 @@ def _voice_for(style, speaker_key=None, video_cast=None):
                 if c.get('personality'):
                     direction.append('performed as ' + c['personality'].strip().rstrip('.'))
                 # a character with a cloned voice speaks in it, not a preset
-                if c.get('voice_provider') and c.get('voice_id'):
-                    out['voice_provider'] = c['voice_provider']; out['voice_id'] = c['voice_id']
+                # (elevenlabs uses a voice_id; free.ai clones from the stored sample)
+                if c.get('voice_provider'):
+                    out['voice_provider'] = c['voice_provider']
+                    if c.get('voice_id'): out['voice_id'] = c['voice_id']
+                    if c.get('voice_sample'): out['voice_sample'] = c['voice_sample']
                 break
 
     out['style'] = (accent + (', ' + ', '.join(direction) if direction else '')).rstrip(':').rstrip() + ': '

@@ -189,6 +189,35 @@ def veo_i2v(still_png_bytes, motion_prompt, model='veo-3.1-fast-generate-preview
     raise RuntimeError('veo: timeout')
 
 ELEVEN_KEY = _cred('ELEVENLABS_API_KEY')
+FREEAI_KEY = _cred('FREEAI_API_KEY') or _cred('FREE_AI_API_KEY')
+
+
+def _freeai_clone_tts(text, outfile, sample_path):
+    """Zero-shot voice clone via Free.ai (free): send the stored reference sample
+    + the line, get speech back in that voice. Written as a mono 24k wav so the
+    assembly pipeline treats it exactly like a Gemini clip."""
+    import subprocess, os as _os
+    from . import supa
+    ref = requests.get(supa.public_url(sample_path, 'assets'), timeout=60)
+    ref.raise_for_status()
+    r = requests.post('https://api.free.ai/v1/voice/clone/',
+                      headers={'Authorization': f'Bearer {FREEAI_KEY}'},
+                      files={'audio': ('sample', ref.content, 'audio/mpeg')},
+                      data={'text': text}, timeout=240)
+    r.raise_for_status()
+    url = (r.json() or {}).get('audio_url')
+    if not url:
+        raise RuntimeError(f'free.ai clone: no audio_url ({str(r.json())[:160]})')
+    aud = requests.get(url, timeout=60); aud.raise_for_status()
+    tmp = str(outfile) + '.src'
+    with open(tmp, 'wb') as f: f.write(aud.content)
+    subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', tmp, '-ac', '1', '-ar', '24000', str(outfile)],
+                   capture_output=True)
+    try: _os.remove(tmp)
+    except OSError: pass
+    _add_cost('tts')
+    with wave.open(str(outfile)) as w:
+        return w.getnframes() / w.getframerate()
 
 
 def _eleven_tts(text, outfile, voice_id):
@@ -213,7 +242,7 @@ def _eleven_tts(text, outfile, voice_id):
         return w.getnframes() / w.getframerate()
 
 
-def tts(text, outfile, voice=None, style=None, voice_provider=None, voice_id=None):
+def tts(text, outfile, voice=None, style=None, voice_provider=None, voice_id=None, voice_sample=None):
     # a beat with no line must be handled as silence by the caller, never sent
     # here — guard so an empty line fails clearly instead of "str + NoneType"
     if not (text or '').strip():
@@ -225,6 +254,13 @@ def tts(text, outfile, voice=None, style=None, voice_provider=None, voice_id=Non
             return _eleven_tts(text, outfile, voice_id)
         except Exception as e:
             print(f'    elevenlabs tts failed ({str(e)[:90]}), falling back to gemini', flush=True)
+    # free zero-shot clone from the stored sample (covers 'freeai' and any
+    # 'elevenlabs_pending' character whose clone never ran)
+    if voice_provider in ('freeai', 'elevenlabs_pending') and voice_sample and FREEAI_KEY:
+        try:
+            return _freeai_clone_tts(text, outfile, voice_sample)
+        except Exception as e:
+            print(f'    free.ai clone tts failed ({str(e)[:90]}), falling back to gemini', flush=True)
     voice = voice or BRAND['voice']
     style = style or "Read in a calm, warm, professional British explainer voice, clear, measured and reassuring: "
     d = _post(f'{BASE}/models/gemini-2.5-pro-preview-tts:generateContent',
