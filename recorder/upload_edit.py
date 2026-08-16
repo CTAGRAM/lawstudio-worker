@@ -40,8 +40,8 @@ for f in range(N):
     prev = g
 act = act[:N]; cx = cx[:N]; cy = cy[:N]
 
-# smooth centre; carry last centre through still frames
-def ema(a, al=0.15):
+# lightly de-noise the raw activity centre; carry last centre through still frames
+def ema(a, al=0.10):
     o = a.copy()
     for i in range(1, len(a)):
         o[i] = al * a[i] + (1 - al) * o[i - 1]
@@ -56,8 +56,26 @@ for f in range(N):
         keep[f] = True; run = 0
     else:
         keep[f] = (run % IDLE_SPEED == 0); run += 1
-n_out = int(keep.sum())
+kept = np.nonzero(keep)[0]
+n_out = len(kept)
 print(f'{N}->{n_out} frames ({N/FPS:.0f}s->{n_out/FPS:.0f}s), dead-time trimmed', flush=True)
+
+# CALM camera, computed over the OUTPUT (kept) timeline so speed-ups can't cause
+# jumps: hold the centre still (deadzone) and only glide slowly toward the action
+# when it clearly relocates, capped to a gentle per-frame velocity. This removes
+# the violent centroid-chasing snapping (the "unwatchable" jitter).
+DEAD = 0.07 * W          # ignore wanders within ~7% of frame width
+MAXV = 0.0009 * W        # <= ~1.7 px/frame @1080p -> a slow, comfortable drift
+tx, ty = cx[kept], cy[kept]
+camx = np.empty(n_out); camy = np.empty(n_out)
+pxc, pyc = float(tx[0]) if n_out else W / 2.0, float(ty[0]) if n_out else H / 2.0
+for i in range(n_out):
+    dx, dy = tx[i] - pxc, ty[i] - pyc
+    d = (dx * dx + dy * dy) ** 0.5
+    if d > DEAD:
+        step = min(MAXV, d - DEAD)
+        pxc += dx / d * step; pyc += dy / d * step
+    camx[i], camy[i] = pxc, pyc
 
 # render kept frames with a gentle zoom toward the smoothed activity centre
 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -66,14 +84,16 @@ ff = subprocess.Popen(['ffmpeg', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt',
     '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', OUT], stdin=subprocess.PIPE)
 z = ZMAX
 cw, ch = W / z, H / z
+oi = 0
 for f in range(N):
     ok, fr = cap.read()
     if not ok:
         break
     if not keep[f]:
         continue
-    x0 = min(max(cx[f] - cw / 2, 0), W - cw)
-    y0 = min(max(cy[f] - ch / 2, 0), H - ch)
+    ccx, ccy = camx[oi], camy[oi]; oi += 1
+    x0 = min(max(ccx - cw / 2, 0), W - cw)
+    y0 = min(max(ccy - ch / 2, 0), H - ch)
     crop = fr[int(y0):int(y0 + ch), int(x0):int(x0 + cw)]
     ff.stdin.write(cv2.resize(crop, (W, H), interpolation=cv2.INTER_LINEAR).tobytes())
 ff.stdin.close(); ff.wait(); cap.release()
