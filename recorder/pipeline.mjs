@@ -29,19 +29,24 @@ function key(k) {
   } catch { return null; }
 }
 
-let plan, beats = null, events = null, zoom, bodyDur;
+let plan, beats = null, events = null, zoom, bodyDur, uploadSynced = false;
 const beatsFile = P('beats.json');
 
 if (job.uploadPath) {
   // ===== UPLOAD MODE: an uploaded screen recording (no click log) =====
-  console.log('\n[upload] watching your recording (vision) + auto-editing…');
-  sh('node', [join(HERE, 'vision_script.mjs'), job.uploadPath, P('plan.json'),
-    job.brandName || '', job.brandDesc || '', job.goal || '']);
-  plan = JSON.parse(readFileSync(P('plan.json'), 'utf8'));
+  // Edit FIRST, then narrate the EDITED body scene-by-scene, anchoring each line
+  // to when its content is on screen — so the script follows the video.
+  console.log('\n[upload] auto-editing your recording…');
   zoom = join(OUT, `${NAME}_zoom.mp4`);
-  sh('python3', [join(HERE, 'upload_edit.py'), job.uploadPath, zoom]);   // pause-cut + activity zoom
+  sh('python3', [join(HERE, 'upload_edit.py'), job.uploadPath, zoom]);   // pause-cut + calm zoom
   bodyDur = dur(zoom);
-  console.log(`   "${plan.title}" — auto-edited to ${bodyDur.toFixed(1)}s`);
+  console.log('   narrating (scene-anchored, in sync)…');
+  sh('node', [join(HERE, 'vision_scenes.mjs'), zoom, P('plan.json'), P('vo.wav'), P('caps.json'),
+    job.brandName || '', job.brandDesc || '', job.goal || ''],
+    { env: { ...process.env, VOICE_NAME: job.voice || 'Puck' } });
+  plan = JSON.parse(readFileSync(P('plan.json'), 'utf8'));
+  uploadSynced = true;   // vo.wav + caps.json are already timed to the scenes
+  console.log(`   "${plan.title}" — ${bodyDur.toFixed(1)}s, narration synced to scenes`);
 } else {
   // ===== URL MODE: drive the browser, log clicks, per-click synced VO =====
   console.log('\n[1/6] planning walkthrough…');
@@ -96,8 +101,8 @@ if (job.uploadPath) {
 console.log('[4/6] voiceover (per-click sync)…');
 const vo = P('vo.wav');
 const capsFile = P('caps.json');
-let synced = false, narration = '';
-if (beats) {
+let synced = uploadSynced, narration = '';   // uploads: vo.wav + caps.json already timed to scenes
+if (!synced && beats) {
   try {
     const out = sh('node', [join(HERE, 'sync_vo.mjs'), 'assemble', beatsFile, events, String(bodyDur), vo, capsFile]);
     console.log('   ' + out.trim());
