@@ -141,12 +141,17 @@ bodyF = os.path.join(TMP, '_bodyF.mp4')
 af = ("[1:a]aresample=async=1[a]" if E('VO_SYNCED')
       else f"[1:a]adelay={int(VO_OFFSET*1000)}|{int(VO_OFFSET*1000)},aresample=async=1,"
            f"loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur={bd:.2f}[a]")
+# Force the body to 1920x1080 + 48k stereo so it matches the intro/outro exactly
+# — an uploaded recording can be any size (e.g. 1920x1064 window capture) and the
+# concat filter needs identical video dims / audio params or it writes no packets.
 run(['ffmpeg', '-nostdin', '-y', '-i', BODY, '-i', VO,
      '-filter_complex',
-     f"[0:v]ass={ass}:fontsdir={FONTS}[v];" + af,
+     (f"[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
+      f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x0A0713,setsar=1,"
+      f"ass={ass}:fontsdir={FONTS}[v];") + af,
      '-map', '[v]', '-map', '[a]', '-r', '30', '-max_muxing_queue_size', '1024',
      '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-     '-c:a', 'aac', '-b:a', '192k', '-shortest', bodyF])
+     '-ar', '48000', '-ac', '2', '-c:a', 'aac', '-b:a', '192k', '-shortest', bodyF])
 
 
 # ---- branded intro / outro cards (ffmpeg gradient ground) ----
