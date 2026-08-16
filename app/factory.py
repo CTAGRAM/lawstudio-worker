@@ -783,6 +783,7 @@ def plan_video(job):
     """Cheap planning phase (Fable 5 only): storyboard -> planned beats -> plan_review. No generation."""
     payload = job.get('payload') or {}
     vid = job['video_id']
+    lib.set_claude_model(payload.get('model'))   # per-video model choice (else claude-fable-5)
     supa.update('videos', vid, {'status': 'planning'})
     style = payload.get('style', 'vyond')
     brand_name, brand = None, None

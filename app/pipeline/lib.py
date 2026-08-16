@@ -60,8 +60,18 @@ def _post(url, body, timeout=600, tries=6):
 # ---- primitives ----
 ANTHROPIC_KEY = _cred('ANTHROPIC_API_KEY')
 
-def claude_gen(prompt, model='claude-fable-5', json_out=True, max_tokens=8000):
-    """Text generation via Anthropic Fable 5 (pipeline director/scriptwriter brain)."""
+# The scriptwriter model, overridable per job (Create form / brand default).
+CLAUDE_MODEL = 'claude-fable-5'
+
+def set_claude_model(m):
+    """Pick the Anthropic model for this job's scriptwriting (must be a claude-* id)."""
+    global CLAUDE_MODEL
+    if m and isinstance(m, str) and m.startswith('claude-'):
+        CLAUDE_MODEL = m
+
+def claude_gen(prompt, model=None, json_out=True, max_tokens=8000):
+    """Text generation via Anthropic (pipeline director/scriptwriter brain)."""
+    model = model or CLAUDE_MODEL
     body = {'model': model, 'max_tokens': max_tokens,
             'messages': [{'role': 'user', 'content': prompt + ('\n\nReturn ONLY valid JSON, no prose.' if json_out else '')}]}
     for attempt in range(4):

@@ -54,6 +54,22 @@ def _refresh_token(channel):
     return access
 
 
+def _set_thumbnail(access, yt_id, asset_id):
+    """Upload the chosen thumbnail asset as the YouTube video's thumbnail."""
+    rows = supa.select('assets', id=f'eq.{asset_id}', select='storage_path,mime')
+    if not rows:
+        return 'thumbnail asset not found'
+    img = requests.get(supa.public_url(rows[0]['storage_path'], 'assets'), timeout=60)
+    img.raise_for_status()
+    r = requests.post(
+        f'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={yt_id}',
+        headers={'Authorization': f'Bearer {access}',
+                 'Content-Type': rows[0].get('mime') or 'image/png'},
+        data=img.content, timeout=120)
+    r.raise_for_status()
+    return 'thumbnail set'
+
+
 def _final_mp4_url(video):
     """Resolve the public URL of a video's final rendered MP4."""
     asset_id = video.get('final_asset')
@@ -145,4 +161,12 @@ def publish(job):
         'youtube_video_id': yt_id, 'youtube_url': yt_url, 'youtube_status': 'done',
         'youtube_channel_row_id': channel_row_id,
     })
-    return f'published {video_id} to {channel.get("channel_title")} as {yt_url} ({privacy})'
+
+    # auto-set the chosen thumbnail (never fail the publish over it — video is up)
+    thumb_note = ''
+    if video.get('thumbnail_asset'):
+        try:
+            thumb_note = ' · ' + _set_thumbnail(access, yt_id, video['thumbnail_asset'])
+        except Exception as e:
+            thumb_note = f' · thumbnail set failed: {str(e)[:120]}'
+    return f'published {video_id} to {channel.get("channel_title")} as {yt_url} ({privacy}){thumb_note}'
