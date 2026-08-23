@@ -138,6 +138,19 @@ def _db_characters():
             pass
     return _CHAR_CACHE['rows'] or []
 
+def _canonical_characters(style):
+    """Saved characters for THIS style only (never style-less/other-style, so a
+    3D character can't appear in a 2D video), and ONE row per name (the newest
+    one that has a real reference) — so the same person can't show up as three
+    different-looking versions."""
+    rows = [c for c in _db_characters() if (c.get('style') or None) == style]
+    by_name = {}
+    for c in sorted(rows, key=lambda x: (bool(x.get('ref_url')), x.get('created_at') or ''), reverse=True):
+        nm = (c.get('name') or c.get('key') or '').strip().lower()
+        if nm and nm not in by_name:
+            by_name[nm] = c
+    return list(by_name.values())
+
 def _fetch_ref(url):
     try:
         import requests
@@ -155,8 +168,7 @@ def _cast_for_beat(beat, video_cast, style='vyond'):
     stops one vertical's cast turning up in another's video — an unknown key is
     dropped rather than silently resolved against the built-in roster.
     """
-    db = {c['key']: c for c in _db_characters()
-          if (c.get('style') or None) in (style, None)}
+    db = {c['key']: c for c in _canonical_characters(style)}   # this style only, one per name
     custom = (video_cast or {}).get('custom', {})   # {key: {name, desc}}
     allowed = set(db) | set(custom)
 
@@ -263,7 +275,7 @@ def _director(style, brand=None):
 
 def _cast_briefing(style):
     """Who the recurring cast are and how they behave, for the scriptwriter."""
-    rows = [c for c in _db_characters() if (c.get('style') or style) == style]
+    rows = _canonical_characters(style)   # this style only, one per name
     if not rows:
         return ''
     out = []
@@ -306,12 +318,22 @@ def storyboard(style, topic, script, article_url=None, target_seconds=None, lear
     # The director profile must match the vertical — a kids channel briefed as a
     # "UK legal-explainer studio" turns "wheels on the bus" into bus licence law.
     profile = _director(style, brand)
+    NARRATION_RULES = (
+        "NARRATION STYLE (critical): write every spoken line (the 'vo') as ONE narrator speaking "
+        "directly to the viewer in clean, natural, plain spoken English — the way a person explains "
+        "something out loud. It is a single-narrator explainer: do NOT write dialogue or role-play "
+        "between characters, and do NOT switch speakers. Absolutely NO meta-commentary, scaffolding "
+        "or stage directions — never write phrases like \"here's the headline\", \"let's act it out\", "
+        "\"I'll play the...\", \"worked example with invented figures\", \"quick scope note\", "
+        "\"in this video\", \"picture this\", \"as you can see\", or any aside about the video itself. "
+        "Just say the substance plainly and directly. ")
     prompt = (f"{profile['who']} Write a storyboard as JSON.\n{src}\n\n"
               + (f"ONLY these characters appear in this episode: {', '.join(only_cast)}. "
                  "Do not write anyone else into any shot — no colleagues, no clients, no bystanders, "
                  "no 'main character'. Every person described must be one of them.\n" if only_cast else "")
               + f"Style: {style}. {scope} {guide}{_cast_briefing(style)}{learn}\n"
-              f"{profile['rules']} "
+              + NARRATION_RULES
+              + f"{profile['rules']} "
               'Return JSON: {"title": "...", "beats": [ ... ]}')
     return json.loads(lib.text_gen(prompt))
 
@@ -583,42 +605,13 @@ def _pick_voice(kind, key):
 
 
 def _voice_for(style, speaker_key=None, video_cast=None):
-    """TTS voice + delivery for whoever speaks this beat.
-
-    The accent is decided by the style and is never dropped: character direction
-    is layered ON TOP of it. An earlier version replaced the whole instruction
-    when a character had their own entry, which quietly lost the British accent
-    the client keeps asking for.
-    """
+    """ONE narrator voice for the whole video. The client wants a single, consistent
+    narrator throughout — not a different voice per character — so every beat uses
+    the style's narrator voice and accent, regardless of who is 'speaking' in the
+    script. (speaker_key/video_cast kept for signature compatibility.)"""
     pk = style_pack(style)
-    out = {'voice': pk.get('voice_name') or 'Charon'}
     accent = (pk.get('voice_style') or ACCENT_DEFAULT).strip().rstrip(':').rstrip()
-    direction = []
-
-    entry = ((video_cast or {}).get('custom') or {}).get(speaker_key) if speaker_key else None
-    if entry:
-        if entry.get('voice_name'): out['voice'] = entry['voice_name']
-        who = entry.get('name') or 'this character'
-        direction.append(f"speaking as {who}" + (f", who is {entry['desc']}" if entry.get('desc') else ''))
-
-    if speaker_key:
-        for c in _db_characters():
-            if c.get('key') == speaker_key and (c.get('style') or style) == style:
-                if c.get('voice_name'): out['voice'] = c['voice_name']
-                if c.get('voice_style'):
-                    accent = c['voice_style'].strip().rstrip(':').rstrip()
-                if c.get('personality'):
-                    direction.append('performed as ' + c['personality'].strip().rstrip('.'))
-                # a character with a cloned voice speaks in it, not a preset
-                # (elevenlabs uses a voice_id; free.ai clones from the stored sample)
-                if c.get('voice_provider'):
-                    out['voice_provider'] = c['voice_provider']
-                    if c.get('voice_id'): out['voice_id'] = c['voice_id']
-                    if c.get('voice_sample'): out['voice_sample'] = c['voice_sample']
-                break
-
-    out['style'] = (accent + (', ' + ', '.join(direction) if direction else '')).rstrip(':').rstrip() + ': '
-    return out
+    return {'voice': pk.get('voice_name') or 'Charon', 'style': accent + ': '}
 
 def _beat_plan(kind, brand_name, style):
     if kind == 'scene':
@@ -819,7 +812,7 @@ def plan_video(job):
                     only_cast=pinned or None)
     beats = sb['beats']
     pk_plan = style_pack(style)
-    style_has_cast = any((c.get('style') or style) == style for c in _db_characters())
+    style_has_cast = bool(_canonical_characters(style))
     _deadline = time.time() + BIBLE_BUDGET_S
     bible = {} if style_has_cast else _build_cast_bible(vid, style, beats, pk_plan, _deadline)
     name_to_key = {v['name'].lower(): k for k, v in bible.items()}
