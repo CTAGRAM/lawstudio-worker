@@ -59,7 +59,7 @@ const imgs = segs.map((s, i) => {
 
 // ---- 3. one narration line per scene, sized to that scene's length ----
 const brandLine = BRAND ? `The product is "${BRAND}"${BRANDDESC ? ` (${BRANDDESC})` : ''} — name it naturally.` : '';
-const sceneList = segs.map((s, i) => `scene ${i + 1}: shown for ${s.dur.toFixed(1)}s (~${Math.max(5, Math.round(s.dur * 2.6))} words)`).join('\n');
+const sceneList = segs.map((s, i) => `scene ${i + 1}: shown for ${s.dur.toFixed(1)}s (~${Math.max(6, Math.round(s.dur * 3.0))} words — enough to talk for the whole scene)`).join('\n');
 const sys = `You are narrating a product walkthrough. The ${segs.length} images are consecutive scenes from a screen recording, IN ORDER. ${brandLine}
 Write ONE spoken line PER scene describing what is happening in THAT scene, as a friendly guide, in SIMPLE clear everyday English (short sentences, no jargon). Each line must fit the scene's on-screen time — keep within the word budget so the voiceover stays in sync with the video. Line 1 may briefly set the scene.
 ${GOAL ? 'Goal of the video: ' + GOAL + '\n' : ''}Scene timing:
@@ -104,48 +104,19 @@ const fullClip = join(dir, 'full.wav');
 tts(capLines.map((l) => l.text).join(' '), fullClip);   // one voice for everything
 const voDur = dur(fullClip);
 
-// silence gaps (natural pauses) so we cut between words, not through them
-let sil = [];
-try {
-  const out = execFileSync('ffmpeg', ['-nostdin', '-i', fullClip, '-af', 'silencedetect=noise=-32dB:d=0.16', '-f', 'null', '-'],
-    { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 8 * 1024 * 1024 }).toString();
-  const ss = [...out.matchAll(/silence_start: ([0-9.]+)/g)].map((m) => +m[1]);
-  const se = [...out.matchAll(/silence_end: ([0-9.]+)/g)].map((m) => +m[1]);
-  for (let i = 0; i < Math.min(ss.length, se.length); i++) sil.push((ss[i] + se[i]) / 2);
-} catch (e) { try { const o = String(e.stderr || ''); const ss = [...o.matchAll(/silence_start: ([0-9.]+)/g)].map((m) => +m[1]); const se = [...o.matchAll(/silence_end: ([0-9.]+)/g)].map((m) => +m[1]); for (let i = 0; i < Math.min(ss.length, se.length); i++) sil.push((ss[i] + se[i]) / 2); } catch { sil = []; } }
+// ---- 5. CONTINUOUS voiceover — the one clip plays straight through with NO
+// gaps, so the voice never stops mid-video. Each line is sized to its scene, so
+// the continuous narration tracks the video. Pad to the body length. ----
+execFileSync('ffmpeg', ['-nostdin', '-y', '-i', fullClip,
+  '-af', `loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur=${DUR.toFixed(2)}`,
+  '-t', DUR.toFixed(2), '-ar', '24000', '-ac', '1', VO_OUT], { stdio: 'ignore' });
 
-// line boundaries = char-proportional times, snapped to the nearest real pause
+// captions timed to the real VO, per line's share of the text (matches the voice)
 const totalChars = capLines.reduce((s, l) => s + l.text.length, 0) || 1;
-let acc = 0; const lb = [0];
-for (let i = 0; i < capLines.length - 1; i++) {
-  acc += capLines[i].text.length;
-  let t = voDur * acc / totalChars, best = t, bd = 1.2;
-  for (const s of sil) if (Math.abs(s - t) < bd) { bd = Math.abs(s - t); best = s; }
-  lb.push(best);
+let acc = 0; const caps = [];
+for (const l of capLines) {
+  const start = voDur * acc / totalChars; acc += l.text.length;
+  caps.push({ start: +start.toFixed(2), end: +(voDur * acc / totalChars).toFixed(2), text: l.text });
 }
-lb.push(voDur);
-for (let i = 1; i < lb.length; i++) if (lb[i] <= lb[i - 1]) lb[i] = Math.min(voDur, lb[i - 1] + 0.3);
-
-// cut each line's audio out of the one clip
-const pieces = [];
-for (let i = 0; i < capLines.length; i++) {
-  const p = join(dir, `p${i}.wav`);
-  execFileSync('ffmpeg', ['-nostdin', '-y', '-ss', lb[i].toFixed(3), '-to', lb[i + 1].toFixed(3), '-i', fullClip, p], { stdio: 'ignore' });
-  if (existsSync(p) && dur(p) > 0.1) pieces.push({ clip: p, durMs: Math.round(dur(p) * 1000), text: capLines[i].text, start: capLines[i].start });
-}
-
-// ---- 5. place each piece AT its scene timestamp; build the VO + timed captions ----
-const segments = []; let prevEnd = 0;
-for (const c of pieces) {
-  const startMs = Math.max(Math.round(c.start * 1000), prevEnd + 60);
-  segments.push({ clip: c.clip, startMs, endMs: startMs + c.durMs, text: c.text });
-  prevEnd = startMs + c.durMs;
-}
-const totalMs = Math.max(DUR * 1000, prevEnd + 200);
-const inputs = segments.flatMap((s) => ['-i', s.clip]);
-const fc = segments.map((s, i) => `[${i}]adelay=${s.startMs}|${s.startMs}[a${i}]`).join(';')
-  + ';' + segments.map((_, i) => `[a${i}]`).join('') + `amix=inputs=${segments.length}:normalize=0:dropout_transition=0,`
-  + `loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur=${(totalMs / 1000).toFixed(2)}[a]`;
-execFileSync('ffmpeg', ['-nostdin', '-y', ...inputs, '-filter_complex', fc, '-map', '[a]', '-t', (totalMs / 1000).toFixed(2), '-ar', '24000', '-ac', '1', VO_OUT], { stdio: 'ignore' });
-writeFileSync(CAPS_OUT, JSON.stringify(segments.map((s) => ({ start: s.startMs / 1000, end: s.endMs / 1000, text: s.text })), null, 2));
-console.log(JSON.stringify({ title: plan.title, scenes: segs.length, lines: segments.length, voDur, spread: (prevEnd / 1000).toFixed(1) }));
+writeFileSync(CAPS_OUT, JSON.stringify(caps, null, 2));
+console.log(JSON.stringify({ title: plan.title, scenes: segs.length, lines: capLines.length, voDur, body: DUR }));

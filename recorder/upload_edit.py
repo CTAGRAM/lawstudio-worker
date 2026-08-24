@@ -10,7 +10,8 @@ import sys, subprocess
 import numpy as np, cv2
 
 SRC, OUT = sys.argv[1], sys.argv[2]
-IDLE_SPEED = 4          # dead frames kept 1-in-N
+import os as _os
+IDLE_SPEED = int(_os.environ.get('IDLE_SPEED', '4'))   # truly-static frames kept 1-in-N (cursor frames are kept at 1x, see ACT_THR)
 # Screen walkthroughs must stay fully visible — a moving punch-in crops content
 # out of frame ("can't see what's going on"), so default to NO zoom (full frame,
 # no camera movement). Override with ZOOM=1.1 etc. if a gentle zoom is ever wanted.
@@ -50,7 +51,11 @@ def ema(a, al=0.10):
         o[i] = al * a[i] + (1 - al) * o[i - 1]
     return o
 cx, cy = ema(cx), ema(cy)
-thr = max(30.0, np.percentile(act[act > 0], 35) if (act > 0).any() else 30.0)   # "dead" below this
+# "dead" = almost nothing changed. A LOW absolute threshold so even a moving
+# mouse cursor counts as activity and is KEPT at natural speed — only truly
+# static frames (reading pauses, loading) get compressed, so the cursor never
+# looks sped up.
+thr = float(_os.environ.get('ACT_THR', '10'))
 
 # decide kept frames (speed dead spans)
 keep = np.zeros(N, bool); run = 0
@@ -80,11 +85,21 @@ for i in range(n_out):
         pxc += dx / d * step; pyc += dy / d * step
     camx[i], camy[i] = pxc, pyc
 
-# render kept frames with a gentle zoom toward the smoothed activity centre
+# remove a bottom-right screen-recorder watermark (e.g. Castify free tier) by
+# interpolating over it. On unless DELOGO_OFF=1; box is relative to frame size.
+vf = []
+if _os.environ.get('DELOGO_OFF') != '1':
+    dw, dh = int(W * 0.24), int(H * 0.18)
+    dx, dy = W - dw - 6, H - dh - 4
+    vf.append(f'delogo=x={dx}:y={dy}:w={dw}:h={dh}')
+
+# render kept frames (full frame; optional watermark removal)
 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-ff = subprocess.Popen(['ffmpeg', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24',
-    '-s', f'{W}x{H}', '-r', f'{FPS}', '-i', 'pipe:0', '-c:v', 'libx264', '-crf', '20',
-    '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', OUT], stdin=subprocess.PIPE)
+enc = ['ffmpeg', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24',
+    '-s', f'{W}x{H}', '-r', f'{FPS}', '-i', 'pipe:0']
+if vf: enc += ['-vf', ','.join(vf)]
+enc += ['-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', OUT]
+ff = subprocess.Popen(enc, stdin=subprocess.PIPE)
 z = ZMAX
 cw, ch = W / z, H / z
 oi = 0
