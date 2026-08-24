@@ -11,7 +11,10 @@ import numpy as np, cv2
 
 SRC, OUT = sys.argv[1], sys.argv[2]
 IDLE_SPEED = 4          # dead frames kept 1-in-N
-ZMAX = 1.28             # gentle magnification toward the action
+# Screen walkthroughs must stay fully visible — a moving punch-in crops content
+# out of frame ("can't see what's going on"), so default to NO zoom (full frame,
+# no camera movement). Override with ZOOM=1.1 etc. if a gentle zoom is ever wanted.
+ZMAX = float(__import__('os').environ.get('ZOOM', '1.0'))
 cap = cv2.VideoCapture(SRC)
 FPS = cap.get(cv2.CAP_PROP_FPS) or 30
 W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -91,7 +94,11 @@ for f in range(N):
         break
     if not keep[f]:
         continue
-    ccx, ccy = camx[oi], camy[oi]; oi += 1
+    oi += 1
+    if z <= 1.001:
+        ff.stdin.write(fr.tobytes())   # full frame, nothing cropped, no movement
+        continue
+    ccx, ccy = camx[oi - 1], camy[oi - 1]
     x0 = min(max(ccx - cw / 2, 0), W - cw)
     y0 = min(max(ccy - ch / 2, 0), H - ch)
     crop = fr[int(y0):int(y0 + ch), int(x0):int(x0 + cw)]
