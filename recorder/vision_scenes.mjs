@@ -60,11 +60,14 @@ const imgs = segs.map((s, i) => {
 // ---- 3. one narration line per scene, sized to that scene's length ----
 const brandLine = BRAND ? `The product is "${BRAND}"${BRANDDESC ? ` (${BRANDDESC})` : ''} — name it naturally.` : '';
 const sceneList = segs.map((s, i) => `scene ${i + 1}: shown for ${s.dur.toFixed(1)}s (~${Math.max(6, Math.round(s.dur * 3.0))} words — enough to talk for the whole scene)`).join('\n');
-const sys = `You are narrating a product walkthrough. The ${segs.length} images are consecutive scenes from a screen recording, IN ORDER. ${brandLine}
-Write ONE spoken line PER scene describing what is happening in THAT scene, as a friendly guide, in SIMPLE clear everyday English (short sentences, no jargon). Each line must fit the scene's on-screen time — keep within the word budget so the voiceover stays in sync with the video. Line 1 may briefly set the scene.
-${GOAL ? 'Goal of the video: ' + GOAL + '\n' : ''}Scene timing:
+const cta = `Try ${BRAND || 'it'} free on the website`;
+const sys = `You are writing the voiceover for a SALES / PROMO product demo. The ${segs.length} images are consecutive scenes from a screen recording, IN ORDER. ${brandLine}
+This is a MARKETING video that must SELL the product — not a dry click-by-click walkthrough. Write ONE spoken line PER scene. For each scene, say what's on screen AND why it matters: tie the on-screen action to a real BENEFIT, FEATURE or USE CASE (e.g. saves hours, drafts documents instantly, trusted templates, AI co-pilot answers legal questions). Confident, persuasive, warm — like a great product marketer — but still SIMPLE clear English, no jargon or hype clichés. Each line must fit the scene's on-screen time (word budget below) so it stays in sync.
+- Line 1: a punchy hook that names the product and its big promise.
+- The LAST line MUST be a clear CALL TO ACTION: "${cta}" (phrase it naturally, e.g. "Ready to try it? ${cta} today.") so the video ends on the CTA, never trailing off.
+${GOAL ? 'What this demo shows: ' + GOAL + '\n' : ''}Scene timing:
 ${sceneList}
-Return STRICT JSON: {"title": str, "tagline": str (<=5 words), "kicker": str (short ALL-CAPS eyebrow), "thumbHeadline": str (2-4 words), "thumbSub": str, "lines": [str, ... exactly ${segs.length} lines in order]}.`;
+Return STRICT JSON: {"title": str, "tagline": str (<=5 words), "kicker": str (short ALL-CAPS eyebrow), "thumbHeadline": str (2-4 words), "thumbSub": str, "lines": [str, ... exactly ${segs.length} lines in order, the LAST one a call to action]}.`;
 
 const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${G}`,
   { method: 'POST', headers: { 'Content-Type': 'application/json' },
