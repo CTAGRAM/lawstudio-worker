@@ -17,12 +17,12 @@ const mime = (p) => p.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg
 const img = (p) => ({ inline_data: { mime_type: mime(p), data: readFileSync(p).toString('base64') } });
 
 let prompt = `Design a premium, high-converting 16:9 YouTube thumbnail for a SaaS product walkthrough video, matching a bright modern SaaS website.
-Clean WHITE background (#ffffff) with a subtle soft light-violet glow — NOT dark. Violet accent (${ACCENT}).
-Reference image 1 is the brand LOGO — place it cleanly in the TOP-LEFT corner, crisp and legible on the white.
+Mostly-white background with a SUBTLE, SOFT PINK-to-lavender GRADIENT glow (gentle blush pink fading into white, with a faint hint of violet ${ACCENT}) — light and airy, NOT dark, keep the gradient understated.
+Reference image 1 is the brand LOGO — place it cleanly in the TOP-LEFT corner, crisp and legible.
 Reference image 2 is the actual PRODUCT screenshot — present it inside a sleek modern browser window with rounded corners and a soft drop shadow, angled slightly in 3D, occupying the right ~55% of the frame.
 On the LEFT half, a bold punchy headline in large heavy DARK NAVY (${NAVY}) sans-serif, up to two lines: "${HEADLINE}". Directly below it, a small rounded solid violet (${ACCENT}) pill with WHITE text reading "${SUB}".
-Add subtle upward growth/analytics motifs in ${ACCENT}.
-Style: clean, light, airy, trustworthy, professional legal-tech. Crisp and uncluttered, optimised so the text stays readable at small thumbnail sizes. Do not add any other logos, captions, or watermarks.`;
+Clean, minimal and uncluttered — NO arrows, graphs, charts or growth motifs.
+Style: light, airy, trustworthy, professional legal-tech. Crisp and uncluttered, optimised so the text stays readable at small thumbnail sizes. Do not add any other logos, captions, or watermarks.`;
 if (USER_PROMPT) prompt += `\n\nADDITIONAL CREATIVE DIRECTION FROM THE USER — follow this closely, it overrides the defaults where they conflict (but always keep OUR logo and the real product screenshot): ${USER_PROMPT}`;
 if (EXAMPLE) prompt += `\n\nThe FINAL reference image is an EXAMPLE thumbnail — closely match its overall STYLE, LAYOUT, composition, colour feel and type treatment, while using OUR logo and product.`;
 
