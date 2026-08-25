@@ -56,6 +56,7 @@ async function handle(v) {
     bj.brandName = brand.name || null;
     bj.brandDesc = brand.niche || brand.director_who || null;
     bj.voice = brand.voice || null;      // per-brand narrator
+    bj.thumbStyle = pal.thumb_style || null;   // per-brand thumbnail look (e.g. Go Legal AI: light + pink)
     try { if (brand.intro_asset) bj.introPath = await downloadAsset(brand.intro_asset, join(out, 'brand_intro.mp4')); } catch (e) { log('intro dl skip', e.message); }
     try { if (brand.outro_asset) bj.outroPath = await downloadAsset(brand.outro_asset, join(out, 'brand_outro.mp4')); } catch (e) { log('outro dl skip', e.message); }
     try { if (brand.logo_asset) bj.logoPath = await downloadAsset(brand.logo_asset, join(out, 'logo.png')); } catch (e) { log('logo dl skip', e.message); }

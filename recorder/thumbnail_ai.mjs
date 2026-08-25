@@ -13,16 +13,18 @@ if (!G) { console.error('no GEMINI_API_KEY'); process.exit(1); }
 const E = (k) => (process.env[k] && !process.env[k].startsWith('#')) ? process.env[k] : null;
 const USER_PROMPT = E('THUMB_PROMPT');   // custom description from the user
 const EXAMPLE = E('THUMB_EXAMPLE') && existsSync(E('THUMB_EXAMPLE')) ? E('THUMB_EXAMPLE') : null;   // style reference
+// per-BRAND look for the background/mood (so each brand keeps its own theme).
+// Falls back to a neutral clean style using the brand's own palette colours.
+const STYLE = E('THUMB_STYLE') || `Clean, professional background in the brand's colours (accent ${ACCENT}); light and uncluttered. No arrows, graphs or charts.`;
 const mime = (p) => p.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
 const img = (p) => ({ inline_data: { mime_type: mime(p), data: readFileSync(p).toString('base64') } });
 
-let prompt = `Design a premium, high-converting 16:9 YouTube thumbnail for a SaaS product walkthrough video, matching a bright modern SaaS website.
-Mostly-white background with a SUBTLE, SOFT PINK-to-lavender GRADIENT glow (gentle blush pink fading into white, with a faint hint of violet ${ACCENT}) — light and airy, NOT dark, keep the gradient understated.
+let prompt = `Design a premium, high-converting 16:9 YouTube thumbnail for a SaaS product walkthrough video.
+${STYLE}
 Reference image 1 is the brand LOGO — place it cleanly in the TOP-LEFT corner, crisp and legible.
 Reference image 2 is the actual PRODUCT screenshot — present it inside a sleek modern browser window with rounded corners and a soft drop shadow, angled slightly in 3D, occupying the right ~55% of the frame.
-On the LEFT half, a bold punchy headline in large heavy DARK NAVY (${NAVY}) sans-serif, up to two lines: "${HEADLINE}". Directly below it, a small rounded solid violet (${ACCENT}) pill with WHITE text reading "${SUB}".
-Clean, minimal and uncluttered — NO arrows, graphs, charts or growth motifs.
-Style: light, airy, trustworthy, professional legal-tech. Crisp and uncluttered, optimised so the text stays readable at small thumbnail sizes. Do not add any other logos, captions, or watermarks.`;
+On the LEFT half, a bold punchy headline in large heavy ${NAVY} sans-serif, up to two lines: "${HEADLINE}". Directly below it, a small rounded solid ${ACCENT} pill with WHITE text reading "${SUB}".
+Crisp and uncluttered, optimised so the text stays readable at small thumbnail sizes. Do not add any other logos, captions, or watermarks.`;
 if (USER_PROMPT) prompt += `\n\nADDITIONAL CREATIVE DIRECTION FROM THE USER — follow this closely, it overrides the defaults where they conflict (but always keep OUR logo and the real product screenshot): ${USER_PROMPT}`;
 if (EXAMPLE) prompt += `\n\nThe FINAL reference image is an EXAMPLE thumbnail — closely match its overall STYLE, LAYOUT, composition, colour feel and type treatment, while using OUR logo and product.`;
 

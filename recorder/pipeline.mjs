@@ -195,6 +195,7 @@ if (job.thumbnail !== false) {
   const sub = plan.thumbSub || plan.tagline || job.brandName || host;
   if (job.thumbPrompt) bfEnv.THUMB_PROMPT = job.thumbPrompt;                                  // "by description"
   if (job.thumbExample && existsSync(job.thumbExample)) bfEnv.THUMB_EXAMPLE = job.thumbExample; // "by example"
+  if (job.thumbStyle) bfEnv.THUMB_STYLE = job.thumbStyle;                                       // per-brand look
   try {
     // a clean product frame ~40% through the zoomed body
     const frame = join(OUT, `${NAME}_frame.jpg`);
