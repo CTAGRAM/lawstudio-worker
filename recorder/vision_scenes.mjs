@@ -71,6 +71,7 @@ Return STRICT JSON: {"title": str, "tagline": str (<=5 words), "kicker": str (sh
 
 const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${G}`,
   { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(120000),
     body: JSON.stringify({ systemInstruction: { parts: [{ text: sys }] },
       contents: [{ parts: [{ text: `The recording is ${DUR.toFixed(0)}s. Here are the ${segs.length} scenes in order:` }, ...imgs] }],
       generationConfig: { temperature: 0.4, responseMimeType: 'application/json' } }) });
@@ -87,10 +88,18 @@ function tts(text, out) {
   const body = JSON.stringify({
     contents: [{ parts: [{ text: `Say in a warm, friendly, professional BRITISH ENGLISH accent (en-GB), clear and natural, NOT American: ${text}` }] }],
     generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE } } } } });
-  const r = execFileSync('curl', ['-s', '-X', 'POST',
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${G}`,
-    '-H', 'Content-Type: application/json', '-d', body], { maxBuffer: 64 * 1024 * 1024 }).toString();
-  const b64 = JSON.parse(r).candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData?.data;
+  // hard timeouts + retry so a slow/stalled TTS can never hang the whole render
+  let r = '', b64;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      r = execFileSync('curl', ['-s', '--connect-timeout', '20', '-m', '200', '-X', 'POST',
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${G}`,
+        '-H', 'Content-Type: application/json', '-d', body], { maxBuffer: 64 * 1024 * 1024 }).toString();
+      b64 = JSON.parse(r).candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData?.data;
+      if (b64) break;
+    } catch (e) { r = String(e.message || e); }
+    console.error(`tts attempt ${attempt + 1} failed, retrying…`);
+  }
   if (!b64) throw new Error('TTS no audio: ' + r.slice(0, 140));
   const pcm = out + '.pcm'; writeFileSync(pcm, Buffer.from(b64, 'base64'));
   execFileSync('ffmpeg', ['-nostdin', '-y', '-f', 's16le', '-ar', '24000', '-ac', '1', '-i', pcm, out], { stdio: 'ignore' });
