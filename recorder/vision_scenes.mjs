@@ -59,7 +59,7 @@ const imgs = segs.map((s, i) => {
 
 // ---- 3. one narration line per scene, sized to that scene's length ----
 const brandLine = BRAND ? `The product is "${BRAND}"${BRANDDESC ? ` (${BRANDDESC})` : ''} — name it naturally.` : '';
-const sceneList = segs.map((s, i) => `scene ${i + 1}: shown for ${s.dur.toFixed(1)}s (~${Math.max(6, Math.round(s.dur * 3.0))} words — enough to talk for the whole scene)`).join('\n');
+const sceneList = segs.map((s, i) => `scene ${i + 1}: shown for ${s.dur.toFixed(1)}s (~${Math.max(6, Math.round(s.dur * 2.1))} words — ONE tight sentence)`).join('\n');
 const cta = `Try ${BRAND || 'it'} free on the website`;
 const sys = `You are writing the voiceover for a SALES / PROMO product demo. The ${segs.length} images are consecutive scenes from a screen recording, IN ORDER. ${brandLine}
 This is a MARKETING video that must SELL the product — not a dry click-by-click walkthrough. Write ONE spoken line PER scene. For each scene, say what's on screen AND why it matters: tie the on-screen action to a real BENEFIT, FEATURE or USE CASE (e.g. saves hours, drafts documents instantly, trusted templates, AI co-pilot answers legal questions). Confident, persuasive, warm — like a great product marketer — but still SIMPLE clear English, no jargon or hype clichés. Each line must fit the scene's on-screen time (word budget below) so it stays in sync.
@@ -107,12 +107,12 @@ const fullClip = join(dir, 'full.wav');
 tts(capLines.map((l) => l.text).join(' '), fullClip);   // one voice for everything
 const voDur = dur(fullClip);
 
-// ---- 5. CONTINUOUS voiceover — the one clip plays straight through with NO
-// gaps, so the voice never stops mid-video. Each line is sized to its scene, so
-// the continuous narration tracks the video. Pad to the body length. ----
+// ---- 5. CONTINUOUS voiceover at its NATURAL length (never truncated, so the
+// closing call-to-action is always spoken in full). The pipeline extends the
+// body to fit this, so the narrator never gets cut off mid-sentence. ----
 execFileSync('ffmpeg', ['-nostdin', '-y', '-i', fullClip,
-  '-af', `loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur=${DUR.toFixed(2)}`,
-  '-t', DUR.toFixed(2), '-ar', '24000', '-ac', '1', VO_OUT], { stdio: 'ignore' });
+  '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
+  '-ar', '24000', '-ac', '1', VO_OUT], { stdio: 'ignore' });
 
 // captions timed to the real VO, per line's share of the text (matches the voice)
 const totalChars = capLines.reduce((s, l) => s + l.text.length, 0) || 1;

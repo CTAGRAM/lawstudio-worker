@@ -45,6 +45,20 @@ if (job.uploadPath) {
     job.brandName || '', job.brandDesc || '', job.goal || ''],
     { env: { ...process.env, VOICE_NAME: job.voice || 'Puck' } });
   plan = JSON.parse(readFileSync(P('plan.json'), 'utf8'));
+  // Fit the footage to the narration length (which ends on the spoken CTA): hold
+  // the last frame if the voice runs longer, or trim trailing footage if shorter,
+  // so the voice is never cut mid-sentence AND the CTA closing screen follows the
+  // spoken CTA with no dead air.
+  const voDur = dur(P('vo.wav'));
+  const target = voDur + 0.8;
+  if (Math.abs(target - bodyDur) > 0.4) {
+    const fit = join(OUT, `${NAME}_zoom_fit.mp4`);
+    const vf = target > bodyDur ? ['-vf', `tpad=stop_mode=clone:stop_duration=${(target - bodyDur).toFixed(2)}`] : ['-t', target.toFixed(2)];
+    sh('ffmpeg', ['-nostdin', '-y', '-i', zoom, ...vf,
+      '-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-an', fit]);
+    zoom = fit; bodyDur = dur(zoom);
+    console.log(`   fit footage to narration (body -> ${bodyDur.toFixed(1)}s, vo ${voDur.toFixed(1)}s)`);
+  }
   uploadSynced = true;   // vo.wav + caps.json are already timed to the scenes
   console.log(`   "${plan.title}" — ${bodyDur.toFixed(1)}s, narration synced to scenes`);
 } else {
