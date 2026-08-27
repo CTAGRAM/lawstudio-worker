@@ -82,49 +82,23 @@ print(f'{N}->{n_out} frames ({N/FPS:.0f}s->{n_out/FPS:.0f}s), dead-time trimmed 
 
 ZOOM_ON = ZMAX > 1.001
 
-# CLEAN camera (Screen-Studio / genie.ai): HOLD a fixed framing, dead still, and
-# only RE-TARGET with a single deliberate, fully-eased move when the action
-# clearly relocates and STAYS there. No continuous cursor-follow — that constant
-# micro-drift is what read as a "drunk" wandering camera.
-txr, tyr = cx[kept].astype(np.float64), cy[kept].astype(np.float64)
-def _ema(a, al):
-    o = a.copy()
-    for i in range(1, len(a)):
-        o[i] = al * a[i] + (1 - al) * o[i - 1]
-    return o
-txr, tyr = _ema(txr, 0.05), _ema(tyr, 0.05)      # heavy smoothing kills jitter
-
-camx = np.empty(n_out); camy = np.empty(n_out)
-RETARGET = 0.11 * W                              # only move if action shifts > 11% of width
-MIN_HOLD = max(1, int(FPS * 0.8))                # ...and stays shifted this long (0.8s)
-TRANS = max(1, int(FPS * 0.7))                   # a move takes 0.7s, cosine-eased, then settles
+# FIXED camera. A screen-recording walkthrough has many short scenes, each with
+# activity in a different spot. Chasing them made the frame lurch to a new corner
+# every ~2s — that was the "drunk" wander (and the zoom crop magnified it). So we
+# do NOT pan at all: pick ONE framing, centred on the frame (nudged slightly
+# toward where the action generally is), and hold it dead still for the whole
+# clip. Perfectly smooth by construction — the only motion left is the real
+# on-screen action itself.
 if n_out:
-    seed = min(n_out, MIN_HOLD)
-    lockx = float(np.median(txr[:seed])); locky = float(np.median(tyr[:seed]))
+    ak = act[kept]; m = ak > thr
+    axm = float(np.median(cx[kept][m])) if m.any() else W / 2.0
+    aym = float(np.median(cy[kept][m])) if m.any() else H / 2.0
 else:
-    lockx, locky = W / 2.0, H / 2.0
-i = 0
-dwell = MIN_HOLD                                 # frames held since the last move (start "rested")
-while i < n_out:
-    dev = ((txr[i] - lockx) ** 2 + (tyr[i] - locky) ** 2) ** 0.5
-    if dev > RETARGET and dwell >= MIN_HOLD:     # ...and we've settled a beat since the last move
-        end = min(n_out, i + MIN_HOLD)
-        stayed = all(((txr[k] - lockx) ** 2 + (tyr[k] - locky) ** 2) ** 0.5 > RETARGET * 0.6
-                     for k in range(i, end))
-        if stayed:
-            newx = float(np.median(txr[i:end])); newy = float(np.median(tyr[i:end]))
-            for t in range(TRANS):
-                if i + t >= n_out:
-                    break
-                s = 0.5 - 0.5 * np.cos(np.pi * (t + 1) / TRANS)   # ease-in-out
-                camx[i + t] = lockx + (newx - lockx) * s
-                camy[i + t] = locky + (newy - locky) * s
-            lockx, locky = newx, newy
-            i += TRANS
-            dwell = 0
-            continue
-    camx[i] = lockx; camy[i] = locky
-    i += 1; dwell += 1
+    axm, aym = W / 2.0, H / 2.0
+fixedx = 0.75 * (W / 2.0) + 0.25 * axm            # mostly centred, a gentle nudge toward the action
+fixedy = 0.75 * (H / 2.0) + 0.25 * aym
+camx = np.full(n_out, fixedx)
+camy = np.full(n_out, fixedy)
 
 # CLEAN zoom: ease in ONCE to a steady level and HOLD it — no per-activity
 # pulsing. A calm, constant push-in reads as intentional, not nervous.
