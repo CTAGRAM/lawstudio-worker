@@ -57,17 +57,18 @@ cxt = np.full(N, W / 2.0)  # target center x
 cyt = np.full(N, H / 2.0)
 for f in range(N):
     t = f / FPS
-    wsum = px = py = 0.0
-    wmax = 0.0
+    # Lock to the SINGLE strongest anchor rather than a weighted average of all
+    # active anchors — averaging between overlapping clicks made the crop centre
+    # drift around ("navigating the cursor"). Hold on one point, then move on.
+    bw = 0.0; bx = by = None
     for (ta, ax, ay, strength) in anchors:
         w = env(t - ta) * strength
-        if w > 0:
-            wsum += w; px += w * ax; py += w * ay; wmax = max(wmax, w)
-    zt[f] = wmax
-    if wsum > 0:
-        tx, ty = px / wsum, py / wsum
-        cxt[f] = (1 - wmax) * (W / 2.0) + wmax * tx
-        cyt[f] = (1 - wmax) * (H / 2.0) + wmax * ty
+        if w > bw:
+            bw = w; bx = ax; by = ay
+    zt[f] = bw
+    if bx is not None and bw > 0:
+        cxt[f] = (1 - bw) * (W / 2.0) + bw * bx
+        cyt[f] = (1 - bw) * (H / 2.0) + bw * by
 
 
 # light smoothing so nothing kinks

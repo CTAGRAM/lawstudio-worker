@@ -40,7 +40,7 @@ if (job.uploadPath) {
   zoom = join(OUT, `${NAME}_zoom.mp4`);
   // motion/zoom is a per-video option: dynamic Screen-Studio-style zoom when on
   sh('python3', [join(HERE, 'upload_edit.py'), job.uploadPath, zoom],
-    { env: { ...process.env, ZOOM: job.motion === false ? '1.0' : '1.35' } });
+    { env: { ...process.env, ZOOM: job.motion === false ? '1.0' : '1.22' } });
   bodyDur = dur(zoom);
   console.log('   narrating (scene-anchored, in sync)…');
   sh('node', [join(HERE, 'vision_scenes.mjs'), zoom, P('plan.json'), P('vo.wav'), P('caps.json'),
