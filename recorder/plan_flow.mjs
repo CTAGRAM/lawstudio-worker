@@ -9,6 +9,7 @@
 import { chromium } from 'playwright';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
+import { autoLogin } from './login_fields.mjs';
 
 const job = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const outDir = job.outDir || './out';
@@ -88,17 +89,9 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1, ignoreHTTPSErrors: true });
   const page = await context.newPage();
-  if (job.auth) {
-    const a = job.auth;
-    await page.goto(a.loginUrl || job.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await page.waitForTimeout(800);
-    try {
-      await page.fill(a.userSel, a.user); await page.fill(a.passSel, a.pass);
-      await page.click(a.submitSel);
-      if (a.successUrl) await page.waitForURL(a.successUrl, { timeout: 20000 }).catch(() => {});
-      else await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-    } catch (e) { console.error('login step failed (continuing):', e.message); }
-    await page.waitForTimeout(1200);
+  if (job.auth && (job.auth.user || job.auth.userSel)) {
+    try { await autoLogin(page, { ...job.auth, url: job.url }); }
+    catch (e) { console.error('login step failed (continuing):', e.message); }
   } else {
     await page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(1200);

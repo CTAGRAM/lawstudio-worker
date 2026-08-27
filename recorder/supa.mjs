@@ -48,6 +48,18 @@ export async function recoverOrphans() {
   return rows ? rows.length : 0;
 }
 
+// login credentials for a browsercast video (service-role only table). Read once
+// then delete so plaintext creds never linger. Never logged.
+export async function getBrowsercastCreds(videoId) {
+  try {
+    const rows = await rest('GET', 'browsercast_creds', { params: { video_id: `eq.${videoId}`, limit: '1' } });
+    if (!rows || !rows.length) return null;
+    const c = rows[0];
+    rest('DELETE', 'browsercast_creds', { params: { video_id: `eq.${videoId}` } }).catch(() => {});
+    return { user: c.username, pass: c.password };
+  } catch { return null; }
+}
+
 export async function getBrand(id) {
   if (!id) return null;
   const rows = await rest('GET', 'brands', { params: { id: `eq.${id}`, limit: '1' } });

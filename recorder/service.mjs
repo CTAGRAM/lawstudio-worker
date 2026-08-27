@@ -6,7 +6,7 @@ import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { execFileSync, execFile } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { claimBrowsercast, updateVideo, uploadAsset, publicUrl, getBrand, downloadAsset, recoverOrphans } from './supa.mjs';
+import { claimBrowsercast, updateVideo, uploadAsset, publicUrl, getBrand, downloadAsset, recoverOrphans, getBrowsercastCreds } from './supa.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FONTS = process.env.FONTS_DIR || join(HERE, 'fonts');
@@ -65,6 +65,18 @@ async function handle(v) {
 
   const job = { url: pr.url, uploadPath, goal: pr.goal || '', name, outDir: out,
     cards: 'ffmpeg', captions: 'text', fontsDir: FONTS, aspectPack: pr.aspectPack === true, ...bj };
+  // per-video toggles from the dashboard (default ON when unset)
+  if (pr.motion === false) job.motion = false;         // no zoom/movement — static full frame
+  if (pr.branding === false) job.branding = false;     // no intro/outro screens
+  if (pr.subtitles === false) job.subtitles = false;   // no burned-in captions
+
+  // URL recording with a login: pull creds (service-role table) so the recorder
+  // can sign in and drive the real app instead of filming a static signup screen
+  if (pr.via === 'browsercast' && pr.login) {
+    const creds = await getBrowsercastCreds(v.id);
+    if (creds) { job.auth = { user: creds.user, pass: creds.pass, loginUrl: pr.url }; log('browsercast: login creds loaded'); }
+    else log('browsercast: login flagged but no creds row found');
+  }
   // custom thumbnail controls (from the dashboard)
   if (pr.thumbPrompt) job.thumbPrompt = pr.thumbPrompt;
   if (pr.thumbExample) {

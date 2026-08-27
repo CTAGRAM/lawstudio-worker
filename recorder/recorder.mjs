@@ -20,6 +20,7 @@ import { chromium } from 'playwright';
 import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { dirname, join } from 'path';
+import { USER_SEL, PASS_SEL, SUBMIT_SEL, LOGIN_LINKS } from './login_fields.mjs';
 
 const job = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const VW = job.viewport?.width ?? 1920;
@@ -206,6 +207,60 @@ async function doStep(page, step) {
   }
 }
 
+// Log in with just an email + password — no CSS selectors required. We find the
+// login form on the page (following a "Log in"/"Sign in" link first if the URL
+// landed on a marketing or sign-up screen), fill it, and submit. This is what
+// lets "record a URL" actually get past the sign-in wall instead of filming a
+// static signup screen.
+async function smartLogin(page, a) {
+  log('cue', { note: 'logging in' });
+  await page.goto(a.loginUrl || job.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.waitForTimeout(900); await dismissOverlays(page);
+
+  // if there's no password field yet, follow a Log in / Sign in link/button
+  const hasPass = async () => (await page.locator(PASS_SEL).count().catch(() => 0)) > 0;
+  if (!(await hasPass())) {
+    for (const sel of LOGIN_LINKS) {
+      try { const b = page.locator(sel).first();
+        if (await b.isVisible({ timeout: 300 })) {
+          const p = await locate(page, { selector: sel }); if (p) { await glide(page, p.x, p.y); await ripple(page, p.x, p.y); }
+          await b.click({ timeout: 2500 }); await page.waitForTimeout(1400); await dismissOverlays(page); break;
+        }
+      } catch {}
+    }
+  }
+
+  // username/email field: explicit selector, else best-guess visible input
+  const userSel = a.userSel || USER_SEL;
+  const passSel = a.passSel || PASS_SEL;
+  try {
+    const uf = page.locator(userSel).first();
+    await uf.waitFor({ timeout: 8000 });
+    const p = await locate(page, { selector: userSel });
+    if (p) { await glide(page, p.x, p.y); await ripple(page, p.x, p.y); log('click', { x: Math.round(p.x), y: Math.round(p.y), note: 'email field' }); }
+    await uf.click({ timeout: 3000 }); log('type', { note: (a.user || '').slice(0, 40) });
+    await page.keyboard.type(a.user || '', { delay: 45 }); await page.waitForTimeout(300);
+  } catch (e) { log('cue', { note: 'email field not found' }); }
+  try {
+    const pf = page.locator(passSel).first(); await pf.waitFor({ timeout: 6000 });
+    const p = await locate(page, { selector: passSel });
+    if (p) { await glide(page, p.x, p.y); await ripple(page, p.x, p.y); log('click', { x: Math.round(p.x), y: Math.round(p.y), note: 'password field' }); }
+    await pf.click({ timeout: 3000 }); log('type', { note: '••••' });
+    await page.keyboard.type(a.pass || '', { delay: 30 }); await page.waitForTimeout(300);
+  } catch (e) { log('cue', { note: 'password field not found' }); }
+
+  // submit: explicit selector, else a submit button / "Log in" / "Sign in" / "Continue"
+  const submitSel = a.submitSel || SUBMIT_SEL;
+  try {
+    const sp = await locate(page, { selector: submitSel });
+    if (sp) { await glide(page, sp.x, sp.y); await ripple(page, sp.x, sp.y); log('click', { x: Math.round(sp.x), y: Math.round(sp.y), note: 'sign in' }); }
+    await page.locator(submitSel).first().click({ timeout: 4000 });
+  } catch { try { await page.keyboard.press('Enter'); } catch {} }
+  if (a.successUrl) await page.waitForURL(a.successUrl, { timeout: 20000 }).catch(() => {});
+  else await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(1400); await dismissOverlays(page);
+}
+
 // generic tour when no explicit steps are given (marketing pages / first look)
 async function autoExplore(page) {
   await page.waitForTimeout(1200);
@@ -236,18 +291,9 @@ async function main() {
   await paintCursor(page, cx, cy);
 
   try {
-    // 1) optional login
-    if (job.auth) {
-      const a = job.auth;
-      log('cue', { note: 'logging in' });
-      await page.goto(a.loginUrl || job.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForTimeout(800); await dismissOverlays(page);
-      await doStep(page, { do: 'type', selector: a.userSel, text: a.user });
-      await doStep(page, { do: 'type', selector: a.passSel, text: a.pass, secret: true });
-      await doStep(page, { do: 'click', selector: a.submitSel, note: 'sign in' });
-      if (a.successUrl) await page.waitForURL(a.successUrl, { timeout: 20000 }).catch(() => {});
-      else await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(1200);
+    // 1) optional login — auto-detects the form from just email + password
+    if (job.auth && (job.auth.user || job.auth.userSel)) {
+      await smartLogin(page, job.auth);
     } else {
       await page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
       await page.waitForTimeout(800); await dismissOverlays(page);

@@ -38,7 +38,9 @@ if (job.uploadPath) {
   // to when its content is on screen — so the script follows the video.
   console.log('\n[upload] auto-editing your recording…');
   zoom = join(OUT, `${NAME}_zoom.mp4`);
-  sh('python3', [join(HERE, 'upload_edit.py'), job.uploadPath, zoom]);   // pause-cut + calm zoom
+  // motion/zoom is a per-video option: dynamic Screen-Studio-style zoom when on
+  sh('python3', [join(HERE, 'upload_edit.py'), job.uploadPath, zoom],
+    { env: { ...process.env, ZOOM: job.motion === false ? '1.0' : '1.35' } });
   bodyDur = dur(zoom);
   console.log('   narrating (scene-anchored, in sync)…');
   sh('node', [join(HERE, 'vision_scenes.mjs'), zoom, P('plan.json'), P('vo.wav'), P('caps.json'),
@@ -148,11 +150,17 @@ if (job.fontsDir) bfEnv.FONTS_DIR = job.fontsDir;
 if (synced) { bfEnv.CAPTION_JSON = capsFile; bfEnv.VO_SYNCED = '1'; }   // per-click timed VO + captions
 else if (job.captions === 'text') bfEnv.CAPTION_TEXT = narration;
 if (job.accent) bfEnv.ACCENT = '0x' + String(job.accent).replace('#', '');   // brand palette accent
+if (job.subtitles === false) bfEnv.NO_CAPTIONS = '1';   // subtitles are a per-video option
 
 const brandIntro = job.introPath && existsSync(job.introPath) ? job.introPath : null;
 const brandOutro = job.outroPath && existsSync(job.outroPath) ? job.outroPath : null;
 
-if (brandIntro && brandOutro) {
+if (job.branding === false) {
+  // per-video option: no intro/outro screens — just the (VO + optional captions) body
+  console.log('[5/6] assembling (no intro/outro)…');
+  bfEnv.NO_BRANDING = '1';
+  sh('python3', [join(HERE, 'build_final.py'), zoom, vo, final], { env: bfEnv });
+} else if (brandIntro && brandOutro) {
   // real branded intro/outro videos (logo, brand motion) — the best option
   console.log('[5/6] assembling (brand intro/outro)…');
   sh('python3', [join(HERE, 'build_final.py'), zoom, vo, final, brandIntro, brandOutro], { env: bfEnv });
