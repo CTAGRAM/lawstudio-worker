@@ -11,7 +11,6 @@ import numpy as np, cv2
 
 SRC, OUT = sys.argv[1], sys.argv[2]
 import os as _os
-IDLE_SPEED = int(_os.environ.get('IDLE_SPEED', '4'))   # truly-static frames kept 1-in-N (cursor frames are kept at 1x, see ACT_THR)
 # Motion/zoom is a per-video option. When ON (ZOOM>1), we do a Screen-Studio /
 # genie.ai-style dynamic zoom: punch in toward the action, ease back out when
 # calm, with a smooth pan. When OFF (ZOOM=1.0) it's the full static frame.
@@ -57,16 +56,29 @@ cx, cy = ema(cx), ema(cy)
 # looks sped up.
 thr = float(_os.environ.get('ACT_THR', '10'))
 
-# decide kept frames (speed dead spans)
-keep = np.zeros(N, bool); run = 0
-for f in range(N):
-    if act[f] >= thr:
-        keep[f] = True; run = 0
+# Trim dead time WITHOUT stutter. The old approach decimated idle spans (keep 1
+# frame, drop N-1, repeat) — that shredded every slow scroll and cursor move into
+# jerky jumps (the "drunk" motion). Instead: keep EVERY active frame and every
+# short pause at full native smoothness, and for a LONG dead pause keep only a
+# brief head then CUT the rest out entirely (one clean cut, never interleaved
+# frame-dropping). Motion inside every kept span stays perfectly smooth.
+MAX_DEAD = max(1, int(FPS * float(_os.environ.get('MAX_DEAD', '0.9'))))   # a pause longer than this is trimmed
+HEAD = max(1, int(FPS * float(_os.environ.get('DEAD_HEAD', '0.45'))))     # ...down to just this brief hold
+keep = np.ones(N, bool)
+f = 0
+while f < N:
+    if act[f] < thr:
+        j = f
+        while j < N and act[j] < thr:
+            j += 1
+        if (j - f) > MAX_DEAD:
+            keep[f + HEAD:j] = False       # drop only the TAIL of a long pause (a clean cut)
+        f = j
     else:
-        keep[f] = (run % IDLE_SPEED == 0); run += 1
+        f += 1
 kept = np.nonzero(keep)[0]
 n_out = len(kept)
-print(f'{N}->{n_out} frames ({N/FPS:.0f}s->{n_out/FPS:.0f}s), dead-time trimmed', flush=True)
+print(f'{N}->{n_out} frames ({N/FPS:.0f}s->{n_out/FPS:.0f}s), dead-time trimmed (no decimation)', flush=True)
 
 ZOOM_ON = ZMAX > 1.001
 
