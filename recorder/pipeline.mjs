@@ -107,10 +107,15 @@ if (job.uploadPath) {
   bodyDur = dur(body);
   console.log(`   body ${bodyDur.toFixed(1)}s`);
 
-  // 3. event-driven auto-zoom
-  console.log('[3/6] auto-zoom on logged clicks…');
+  // 3. event-driven auto-zoom (per-video option: off = keep the static recording)
   zoom = join(OUT, `${NAME}_zoom.mp4`);
-  sh('python3', [join(HERE, 'autozoom_events.py'), events, body, zoom]);
+  if (job.motion === false) {
+    console.log('[3/6] motion off — keeping the static recording');
+    zoom = body;
+  } else {
+    console.log('[3/6] auto-zoom on logged clicks…');
+    sh('python3', [join(HERE, 'autozoom_events.py'), events, body, zoom]);
+  }
 }
 
 // ---- 4. tight per-click voiceover: one line per action, timed to each click ----
