@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readd
 import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { cpus } from 'os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REMOTION = '/Users/rudra/OpenMontage/remotion-composer';
@@ -226,7 +227,7 @@ if (polished) {
   // all cores, and a hard timeout so a stuck render can never hang the queue
   const chrome = findChromium();
   const rargs = ['render', 'src/index.tsx', 'GoLegalDemo', final, `--props=${JSON.stringify(props)}`,
-    '--concurrency=4', '--timeout=120000', '--log=error'];
+    `--concurrency=${Math.max(2, cpus().length)}`, '--timeout=120000', '--log=error'];
   if (chrome) { rargs.push(`--browser-executable=${chrome}`); console.log('   chrome:', chrome); }
   // inherit stdout/stderr — do NOT capture via a pipe (Remotion's progress bar
   // crashes when its stdout pipe backs up), and cap the render at 12min.
