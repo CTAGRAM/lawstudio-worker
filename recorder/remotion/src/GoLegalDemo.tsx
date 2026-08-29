@@ -37,6 +37,8 @@ export interface GoLegalDemoProps {
   words?: Word[];
   focus?: Focus[];
   videoSeconds?: number;
+  videoAspect?: number;
+  hollow?: boolean;   // render the overlay only (magenta key for the recording)
   introSeconds?: number;
   outroSeconds?: number;
 }
@@ -52,40 +54,33 @@ function resolveAsset(src: string): string {
   return staticFile(clean);
 }
 
-// ---- animated brand background: pale pink + lavender blobs drifting on white ----
-const Background: React.FC<{ accent: string; accent2: string }> = ({ accent, accent2 }) => {
-  const frame = useCurrentFrame();
-  const { width, height } = useVideoConfig();
-  const blob = (i: number, color: string, r: number, ox: number, oy: number, spd: number) => {
-    const t = frame / 120 + i * 2.1;
-    const x = width * ox + Math.cos(t * spd) * (width * 0.10);
-    const y = height * oy + Math.sin(t * spd * 0.9) * (height * 0.10);
-    return (
-      <div key={i} style={{
-        position: "absolute", left: x - r, top: y - r, width: r * 2, height: r * 2,
-        borderRadius: "50%", background: color, filter: "blur(150px)", opacity: 0.6,
-      }} />
-    );
-  };
-  return (
-    <AbsoluteFill style={{ background: "linear-gradient(135deg,#FBF6FB 0%,#F2ECFB 52%,#FCEEF4 100%)", overflow: "hidden" }}>
-      {blob(0, "#F7C7DD", 540, 0.22, 0.32, 0.5)}
-      {blob(1, "#D5C7F6", 580, 0.80, 0.62, 0.42)}
-      {blob(2, "#FBD8E6", 430, 0.62, 0.14, 0.55)}
-      {blob(3, accent + "33", 360, 0.14, 0.82, 0.48)}
-      <AbsoluteFill style={{ background: "radial-gradient(circle at 50% 42%,rgba(255,255,255,0.55),transparent 62%)" }} />
-    </AbsoluteFill>
-  );
-};
+// ---- brand background: soft pink + lavender glows on white. Layered CSS
+// radial-gradients (no blur filter / no per-frame animation) so it renders fast. ----
+const Background: React.FC<{ accent: string; accent2: string }> = () => (
+  <AbsoluteFill style={{
+    background: [
+      "radial-gradient(58% 52% at 22% 32%, rgba(247,199,221,0.60), transparent 70%)",
+      "radial-gradient(64% 56% at 80% 63%, rgba(213,199,246,0.60), transparent 70%)",
+      "radial-gradient(48% 44% at 62% 12%, rgba(251,216,230,0.55), transparent 70%)",
+      "radial-gradient(50% 48% at 14% 84%, rgba(108,92,231,0.16), transparent 70%)",
+      "radial-gradient(circle at 50% 42%, rgba(255,255,255,0.55), transparent 62%)",
+      "linear-gradient(135deg,#FBF6FB 0%,#F2ECFB 52%,#FCEEF4 100%)",
+    ].join(","),
+  }} />
+);
 
 // ---- the recording, native-res, in a centred rounded browser window, with a
-// Screen-Studio-style zoom that punches in on the action (from the focus track) ----
-const ScreenPanel: React.FC<{ videoSrc: string; focus: Focus[] }> = ({ videoSrc, focus }) => {
+// Screen-Studio-style zoom that punches in on the action (from the focus track).
+// In `hollow` mode the recording is replaced by a magenta key + the window is
+// static — the pipeline composites the (ffmpeg-zoomed) recording behind it. That
+// keeps this render fast (no per-frame video decode). ----
+const KEY = "#FF00FF";   // chroma key for the hollow composite
+const ScreenPanel: React.FC<{ videoSrc: string; focus: Focus[]; hollow?: boolean; videoAspect?: number }> = ({ videoSrc, focus, hollow, videoAspect }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const intro = spring({ frame, fps, config: { damping: 24, stiffness: 85, mass: 1.1 } });
+  const intro = hollow ? 1 : spring({ frame, fps, config: { damping: 24, stiffness: 85, mass: 1.1 } });
   const scale = interpolate(intro, [0, 1], [0.9, 1]);
-  const float = Math.sin(frame / 52) * 5;
+  const float = hollow ? 0 : Math.sin(frame / 52) * 5;
   const rise = interpolate(intro, [0, 1], [46, 0]);
   const [z, fx, fy] = (focus.length ? focus[Math.min(Math.max(frame, 0), focus.length - 1)] : [1, 0.5, 0.5]) as Focus;
   return (
@@ -104,12 +99,16 @@ const ScreenPanel: React.FC<{ videoSrc: string; focus: Focus[] }> = ({ videoSrc,
             <div style={{ background: "#fff", border: "1px solid #E7DFF4", borderRadius: 99, padding: "6px 30px", fontFamily: HEAD, fontSize: 18, fontWeight: 600, color: "#8A7CB0" }}>go-legal.ai</div>
           </div>
         </div>
-        {/* video viewport — the zoom scales the recording toward the action */}
+        {/* video viewport */}
         <div style={{ overflow: "hidden", lineHeight: 0 }}>
-          <OffthreadVideo src={resolveAsset(videoSrc)} style={{
-            width: "100%", display: "block",
-            transform: `scale(${z})`, transformOrigin: `${fx * 100}% ${fy * 100}%`,
-          }} />
+          {hollow ? (
+            <div style={{ width: "100%", aspectRatio: String(videoAspect || 1800 / 1080), background: KEY }} />
+          ) : (
+            <OffthreadVideo src={resolveAsset(videoSrc)} style={{
+              width: "100%", display: "block",
+              transform: `scale(${z})`, transformOrigin: `${fx * 100}% ${fy * 100}%`,
+            }} />
+          )}
         </div>
       </div>
     </AbsoluteFill>
@@ -139,7 +138,7 @@ const Captions: React.FC<{ words: Word[]; accent2: string }> = ({ words, accent2
   return (
     <div style={{ position: "absolute", left: 0, right: 0, bottom: 66, textAlign: "center", opacity: inT, transform: `scale(${scale})` }}>
       <span style={{
-        display: "inline-block", background: "rgba(23,23,68,0.94)", borderRadius: 18, padding: "14px 32px",
+        display: "inline-block", background: "#171744", borderRadius: 18, padding: "14px 32px",
         fontFamily: CAP_FONT, fontSize: 46, fontWeight: 800, lineHeight: 1.14, letterSpacing: -0.4,
         boxShadow: "0 16px 46px rgba(23,23,68,0.28)",
       }}>
@@ -188,7 +187,7 @@ const FullVideo: React.FC<{ src: string }> = ({ src }) => (
 );
 
 export const GoLegalDemo: React.FC<GoLegalDemoProps> = ({
-  videoSrc, voSrc, logoSrc, introVideoSrc, outroVideoSrc, tagline, cta, accent, accent2, words = [], focus = [], videoSeconds, introSeconds = 2.6, outroSeconds = 3.2,
+  videoSrc, voSrc, logoSrc, introVideoSrc, outroVideoSrc, tagline, cta, accent, accent2, words = [], focus = [], videoSeconds, videoAspect, hollow, introSeconds = 2.6, outroSeconds = 3.2,
 }) => {
   const { fps } = useVideoConfig();
   const introF = Math.round(introSeconds * fps);
@@ -201,8 +200,8 @@ export const GoLegalDemo: React.FC<GoLegalDemoProps> = ({
         {introVideoSrc ? <FullVideo src={introVideoSrc} /> : <TitleCard logoSrc={logoSrc} tagline={tagline} accent={accent} />}
       </Sequence>
       <Sequence from={introF} durationInFrames={bodyF}>
-        <ScreenPanel videoSrc={videoSrc} focus={focus} />
-        <Audio src={resolveAsset(voSrc)} />
+        <ScreenPanel videoSrc={videoSrc} focus={focus} hollow={hollow} videoAspect={videoAspect} />
+        {!hollow && <Audio src={resolveAsset(voSrc)} />}
         <Captions words={words} accent2={accent2} />
       </Sequence>
       <Sequence from={introF + bodyF} durationInFrames={outroF}>
@@ -226,5 +225,5 @@ export const calculateGoLegalDemoMetadata: CalculateMetadataFunction<GoLegalDemo
   const intro = props.introSeconds ?? 2.6;
   const outro = props.outroSeconds ?? 3.2;
   const durationInFrames = Math.round((intro + meta.durationInSeconds + outro) * fps);
-  return { durationInFrames, fps, width: 1920, height: 1080, props: { ...props, words, focus, videoSeconds: meta.durationInSeconds } };
+  return { durationInFrames, fps, width: 1920, height: 1080, props: { ...props, words, focus, videoSeconds: meta.durationInSeconds, videoAspect: meta.width / meta.height } };
 };

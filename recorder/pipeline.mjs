@@ -222,17 +222,38 @@ if (polished) {
     cta: 'Try Go Legal AI Free', accent: job.accent || '#6C5CE7', accent2: '#B98CFF',
     introSeconds: 3.0, outroSeconds: 3.0,
   };
+  // HYBRID render (fast): Remotion draws only the overlay (window frame, bg,
+  // captions, intro/outro) with a magenta key where the recording goes — no
+  // per-frame video decode, ~20x faster. Then ffmpeg keys out the magenta and
+  // composites the (zoom-baked) recording behind it.
   const bin = join(REMO, 'node_modules', '.bin', 'remotion');
-  // use the Chromium already in the Playwright base image (no runtime download),
-  // all cores, and a hard timeout so a stuck render can never hang the queue
   const chrome = findChromium();
-  const rargs = ['render', 'src/index.tsx', 'GoLegalDemo', final, `--props=${JSON.stringify(props)}`,
-    `--concurrency=${Math.max(2, cpus().length)}`, '--timeout=120000', '--log=error'];
+  const cores = Math.max(2, cpus().length);
+  const introSec = 3.0;
+  const overlay = join(OUT, `${NAME}_overlay.mp4`);
+  const rargs = ['render', 'src/index.tsx', 'GoLegalDemo', overlay,
+    `--props=${JSON.stringify({ ...props, hollow: true })}`,
+    `--concurrency=${cores}`, '--codec=h264', '--timeout=120000', '--log=error'];
   if (chrome) { rargs.push(`--browser-executable=${chrome}`); console.log('   chrome:', chrome); }
-  // inherit stdout/stderr — do NOT capture via a pipe (Remotion's progress bar
-  // crashes when its stdout pipe backs up), and cap the render at 12min.
-  console.log('· remotion render GoLegalDemo');
+  console.log('· remotion render (overlay)');
   execFileSync(bin, rargs, { cwd: REMO, stdio: ['ignore', 'inherit', 'inherit'], timeout: 12 * 60 * 1000 });
+  // measure the window's video rectangle from the overlay
+  const probe = join(OUT, `${NAME}_probe.png`);
+  execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-y', '-ss', String(introSec + 1), '-i', overlay, '-frames:v', '1', probe]);
+  const [rx, ry, rw, rh] = sh('python3', [join(HERE, 'measure_key.py'), probe]).trim().split(/\s+/).map(Number);
+  console.log('   window rect', rx, ry, rw, rh);
+  // bake the Screen-Studio zoom into the recording at the window size
+  const screen = join(OUT, `${NAME}_screen.mp4`);
+  sh('python3', [join(HERE, 'apply_focus.py'), zoom, P('focus.json'), screen, String(rw), String(rh)]);
+  // composite: recording behind, magenta-keyed overlay on top, VO at intro offset
+  const oDur = dur(overlay);
+  sh('ffmpeg', ['-nostdin', '-v', 'error', '-y', '-i', overlay, '-i', screen, '-i', vo,
+    '-filter_complex',
+    `color=c=black:s=1920x1080:r=30:d=${oDur}[bg];[1:v]setpts=PTS+${introSec}/TB[scr];` +
+    `[bg][scr]overlay=${rx}:${ry}:eof_action=pass[base];[0:v]colorkey=0xFF00FF:0.30:0.12[ovl];` +
+    `[base][ovl]overlay=0:0[v];[2:a]adelay=${introSec * 1000}|${introSec * 1000}[a]`,
+    '-map', '[v]', '-map', '[a]', '-t', String(oDur),
+    '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart', final]);
 } else if (job.branding === false) {
   // per-video option: no intro/outro screens — just the (VO + optional captions) body
   console.log('[5/6] assembling (no intro/outro)…');
