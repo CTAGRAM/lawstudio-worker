@@ -228,7 +228,10 @@ if (polished) {
   const rargs = ['render', 'src/index.tsx', 'GoLegalDemo', final, `--props=${JSON.stringify(props)}`,
     '--concurrency=4', '--timeout=120000', '--log=error'];
   if (chrome) { rargs.push(`--browser-executable=${chrome}`); console.log('   chrome:', chrome); }
-  sh(bin, rargs, { cwd: REMO, timeout: 12 * 60 * 1000, maxBuffer: 64 * 1024 * 1024 });
+  // inherit stdout/stderr — do NOT capture via a pipe (Remotion's progress bar
+  // crashes when its stdout pipe backs up), and cap the render at 12min.
+  console.log('· remotion render GoLegalDemo');
+  execFileSync(bin, rargs, { cwd: REMO, stdio: ['ignore', 'inherit', 'inherit'], timeout: 12 * 60 * 1000 });
 } else if (job.branding === false) {
   // per-video option: no intro/outro screens — just the (VO + optional captions) body
   console.log('[5/6] assembling (no intro/outro)…');
