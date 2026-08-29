@@ -5,7 +5,7 @@
 //
 //   node pipeline.mjs <job.json>
 //   job.json: { url, auth?, goal?, name, outDir, voice? }
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -19,6 +19,21 @@ const P = (ext) => join(OUT, `${NAME}.${ext}`);
 const sh = (cmd, args, opts = {}) => { console.log('· ' + cmd + ' ' + args.slice(-2).join(' '));
   return execFileSync(cmd, args, { stdio: ['ignore', 'pipe', 'inherit'], ...opts }).toString(); };
 const dur = (f) => Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).toString().trim());
+// the Playwright base image ships Chromium — hand it to Remotion so it never
+// tries to download its own Chrome at render time (that was the render hang).
+function findChromium() {
+  if (process.env.REMOTION_BROWSER && existsSync(process.env.REMOTION_BROWSER)) return process.env.REMOTION_BROWSER;
+  const base = process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright';
+  try {
+    for (const d of readdirSync(base).filter(x => x.startsWith('chromium')).sort().reverse()) {
+      for (const sub of ['chrome-linux/chrome', 'chrome-linux/headless_shell']) {
+        const p = join(base, d, sub);
+        if (existsSync(p)) return p;
+      }
+    }
+  } catch {}
+  return null;
+}
 
 function key(k) {
   if (process.env[k] && !process.env[k].startsWith('#')) return process.env[k];   // Koyeb / cloud
@@ -207,7 +222,13 @@ if (polished) {
     introSeconds: 3.0, outroSeconds: 3.0,
   };
   const bin = join(REMO, 'node_modules', '.bin', 'remotion');
-  sh(bin, ['render', 'src/index.tsx', 'GoLegalDemo', final, `--props=${JSON.stringify(props)}`, '--log=error'], { cwd: REMO });
+  // use the Chromium already in the Playwright base image (no runtime download),
+  // all cores, and a hard timeout so a stuck render can never hang the queue
+  const chrome = findChromium();
+  const rargs = ['render', 'src/index.tsx', 'GoLegalDemo', final, `--props=${JSON.stringify(props)}`,
+    '--concurrency=4', '--timeout=120000', '--log=error'];
+  if (chrome) { rargs.push(`--browser-executable=${chrome}`); console.log('   chrome:', chrome); }
+  sh(bin, rargs, { cwd: REMO, timeout: 12 * 60 * 1000, maxBuffer: 64 * 1024 * 1024 });
 } else if (job.branding === false) {
   // per-video option: no intro/outro screens — just the (VO + optional captions) body
   console.log('[5/6] assembling (no intro/outro)…');
