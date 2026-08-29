@@ -231,26 +231,29 @@ if (polished) {
   const cores = Math.max(2, cpus().length);
   const introSec = 3.0;
   const overlay = join(OUT, `${NAME}_overlay.mp4`);
+  // render the overlay at 720p (2.25x fewer pixels = much faster); the recording
+  // itself is composited at full res below, so it stays crisp — only the frame
+  // and captions soften slightly.
   const rargs = ['render', 'src/index.tsx', 'GoLegalDemo', overlay,
     `--props=${JSON.stringify({ ...props, hollow: true })}`,
-    `--concurrency=${cores}`, '--codec=h264', '--timeout=120000', '--log=error'];
+    `--concurrency=${cores}`, '--scale=0.6667', '--codec=h264', '--timeout=120000', '--log=error'];
   if (chrome) { rargs.push(`--browser-executable=${chrome}`); console.log('   chrome:', chrome); }
-  console.log('· remotion render (overlay)');
-  execFileSync(bin, rargs, { cwd: REMO, stdio: ['ignore', 'inherit', 'inherit'], timeout: 12 * 60 * 1000 });
-  // measure the window's video rectangle from the overlay
+  console.log('· remotion render (overlay 720p)');
+  execFileSync(bin, rargs, { cwd: REMO, stdio: ['ignore', 'inherit', 'inherit'], timeout: 18 * 60 * 1000 });
+  // measure the window's video rectangle (on the overlay upscaled to 1080)
   const probe = join(OUT, `${NAME}_probe.png`);
-  execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-y', '-ss', String(introSec + 1), '-i', overlay, '-frames:v', '1', probe]);
+  execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-y', '-ss', String(introSec + 1), '-i', overlay, '-vf', 'scale=1920:1080', '-frames:v', '1', probe]);
   const [rx, ry, rw, rh] = sh('python3', [join(HERE, 'measure_key.py'), probe]).trim().split(/\s+/).map(Number);
   console.log('   window rect', rx, ry, rw, rh);
   // bake the Screen-Studio zoom into the recording at the window size
   const screen = join(OUT, `${NAME}_screen.mp4`);
   sh('python3', [join(HERE, 'apply_focus.py'), zoom, P('focus.json'), screen, String(rw), String(rh)]);
-  // composite: recording behind, magenta-keyed overlay on top, VO at intro offset
+  // composite: recording behind, magenta-keyed overlay (upscaled to 1080) on top
   const oDur = dur(overlay);
   sh('ffmpeg', ['-nostdin', '-v', 'error', '-y', '-i', overlay, '-i', screen, '-i', vo,
     '-filter_complex',
     `color=c=black:s=1920x1080:r=30:d=${oDur}[bg];[1:v]setpts=PTS+${introSec}/TB[scr];` +
-    `[bg][scr]overlay=${rx}:${ry}:eof_action=pass[base];[0:v]colorkey=0xFF00FF:0.30:0.12[ovl];` +
+    `[bg][scr]overlay=${rx}:${ry}:eof_action=pass[base];[0:v]scale=1920:1080,colorkey=0xFF00FF:0.30:0.12[ovl];` +
     `[base][ovl]overlay=0:0[v];[2:a]adelay=${introSec * 1000}|${introSec * 1000}[a]`,
     '-map', '[v]', '-map', '[a]', '-t', String(oDur),
     '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart', final]);
