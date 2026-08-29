@@ -12,13 +12,14 @@ import numpy as np, cv2
 SRC, FOCUS, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
 OW = int(sys.argv[4]) if len(sys.argv) > 4 else 1460
 OH = int(sys.argv[5]) if len(sys.argv) > 5 else 876
+OW += OW % 2; OH += OH % 2   # libx264/yuv420p needs even dimensions
 focus = json.load(open(FOCUS)) if FOCUS and FOCUS != '-' else []
 
 cap = cv2.VideoCapture(SRC)
 FPS = cap.get(cv2.CAP_PROP_FPS) or 30
 W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 N = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-enc = ['ffmpeg', '-nostdin', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{OW}x{OH}',
+enc = ['ffmpeg', '-nostdin', '-loglevel', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{OW}x{OH}',
        '-r', f'{FPS}', '-i', 'pipe:0', '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast',
        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', OUT]
 ff = subprocess.Popen(enc, stdin=subprocess.PIPE)
