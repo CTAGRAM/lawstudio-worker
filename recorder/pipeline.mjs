@@ -236,7 +236,7 @@ if (polished) {
   // and captions soften slightly.
   const rargs = ['render', 'src/index.tsx', 'GoLegalDemo', overlay,
     `--props=${JSON.stringify({ ...props, hollow: true })}`,
-    `--concurrency=${cores}`, '--scale=0.6667', '--codec=h264', '--timeout=120000', '--log=error'];
+    `--concurrency=${cores}`, '--scale=0.75', '--codec=h264', '--timeout=120000', '--log=error'];
   if (chrome) { rargs.push(`--browser-executable=${chrome}`); console.log('   chrome:', chrome); }
   console.log('· remotion render (overlay 720p)');
   execFileSync(bin, rargs, { cwd: REMO, stdio: ['ignore', 'inherit', 'inherit'], timeout: 18 * 60 * 1000 });
@@ -253,7 +253,7 @@ if (polished) {
   sh('ffmpeg', ['-nostdin', '-v', 'error', '-y', '-i', overlay, '-i', screen, '-i', vo,
     '-filter_complex',
     `color=c=black:s=1920x1080:r=30:d=${oDur}[bg];[1:v]setpts=PTS+${introSec}/TB[scr];` +
-    `[bg][scr]overlay=${rx}:${ry}:eof_action=pass[base];[0:v]scale=1920:1080,colorkey=0xFF00FF:0.30:0.12[ovl];` +
+    `[bg][scr]overlay=${rx}:${ry}:eof_action=pass[base];[0:v]scale=1920:1080:flags=lanczos,colorkey=0xFF00FF:0.30:0.12[ovl];` +
     `[base][ovl]overlay=0:0[v];[2:a]adelay=${introSec * 1000}|${introSec * 1000}[a]`,
     '-map', '[v]', '-map', '[a]', '-t', String(oDur),
     '-c:v', 'libx264', '-crf', '19', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart', final]);
