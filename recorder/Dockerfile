@@ -18,10 +18,23 @@ RUN npm ci --omit=dev
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
+# polished-style Remotion renderer — deps bundled once (cached layer)
+COPY remotion/package.json ./remotion/
+RUN cd remotion && npm install --no-audit --no-fund --omit=dev
+
 COPY . .
+
+# install the caption/brand fonts system-wide so headless Chrome renders them,
+# and pre-download Remotion's headless Chrome so the first render doesn't stall
+RUN mkdir -p /usr/share/fonts/truetype/brand \
+    && cp remotion/public/fonts/*.ttf /usr/share/fonts/truetype/brand/ 2>/dev/null || true \
+    && cp fonts/*.ttf /usr/share/fonts/truetype/brand/ 2>/dev/null || true \
+    && fc-cache -f \
+    && cd remotion && node_modules/.bin/remotion browser ensure || true
 
 ENV FONTS_DIR=/srv/recorder/fonts \
     WORKDIR=/tmp/bc \
-    NODE_OPTIONS=--max-old-space-size=1536
+    REMOTION_DIR=/srv/recorder/remotion \
+    NODE_OPTIONS=--max-old-space-size=2560
 
 CMD ["node", "service.mjs"]

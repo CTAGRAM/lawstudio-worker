@@ -5,7 +5,7 @@
 //
 //   node pipeline.mjs <job.json>
 //   job.json: { url, auth?, goal?, name, outDir, voice? }
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -30,6 +30,8 @@ function key(k) {
 }
 
 let plan, beats = null, events = null, zoom, bodyDur, uploadSynced = false;
+// "polished" = the centre-frame Remotion explainer style (uploads only)
+const polished = job.style === 'polished' && !!job.uploadPath;
 const beatsFile = P('beats.json');
 
 if (job.uploadPath) {
@@ -38,9 +40,11 @@ if (job.uploadPath) {
   // to when its content is on screen — so the script follows the video.
   console.log('\n[upload] auto-editing your recording…');
   zoom = join(OUT, `${NAME}_zoom.mp4`);
-  // motion/zoom is a per-video option: dynamic Screen-Studio-style zoom when on
-  sh('python3', [join(HERE, 'upload_edit.py'), job.uploadPath, zoom],
-    { env: { ...process.env, ZOOM: job.motion === false ? '1.0' : '1.22' } });
+  // "polished" style keeps the body at NATIVE res (no baked crop) + a calmer trim;
+  // the zoom is applied later, cleanly, by the Remotion renderer.
+  const upEnv = { ...process.env, ZOOM: (polished || job.motion === false) ? '1.0' : '1.22' };
+  if (polished) { upEnv.MAX_DEAD = '2.0'; upEnv.DEAD_HEAD = '1.0'; }
+  sh('python3', [join(HERE, 'upload_edit.py'), job.uploadPath, zoom], { env: upEnv });
   bodyDur = dur(zoom);
   console.log('   narrating (scene-anchored, in sync)…');
   sh('node', [join(HERE, 'vision_scenes.mjs'), zoom, P('plan.json'), P('vo.wav'), P('caps.json'),
@@ -53,13 +57,22 @@ if (job.uploadPath) {
   // spoken CTA with no dead air.
   const voDur = dur(P('vo.wav'));
   const target = voDur + 0.8;
-  if (Math.abs(target - bodyDur) > 0.4) {
+  // polished keeps the calmer full body (never trims it down) — only pads if the
+  // voice runs past the footage; standard fits both ways.
+  const needPad = target > bodyDur + 0.4;
+  const needTrim = !polished && bodyDur > target + 0.4;
+  if (needPad || needTrim) {
     const fit = join(OUT, `${NAME}_zoom_fit.mp4`);
-    const vf = target > bodyDur ? ['-vf', `tpad=stop_mode=clone:stop_duration=${(target - bodyDur).toFixed(2)}`] : ['-t', target.toFixed(2)];
+    const vf = needPad ? ['-vf', `tpad=stop_mode=clone:stop_duration=${(target - bodyDur).toFixed(2)}`] : ['-t', target.toFixed(2)];
     sh('ffmpeg', ['-nostdin', '-y', '-i', zoom, ...vf,
       '-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-an', fit]);
     zoom = fit; bodyDur = dur(zoom);
     console.log(`   fit footage to narration (body -> ${bodyDur.toFixed(1)}s, vo ${voDur.toFixed(1)}s)`);
+  }
+  // polished: build the Screen-Studio zoom/focus track from the native body
+  if (polished) {
+    try { sh('python3', [join(HERE, 'gen_focus.py'), zoom, P('focus.json'), '--zmax', '1.35']); }
+    catch (e) { console.error('focus track skipped:', String(e.message).slice(0, 120)); }
   }
   uploadSynced = true;   // vo.wav + caps.json are already timed to the scenes
   console.log(`   "${plan.title}" — ${bodyDur.toFixed(1)}s, narration synced to scenes`);
@@ -160,7 +173,42 @@ if (job.subtitles === false) bfEnv.NO_CAPTIONS = '1';   // subtitles are a per-v
 const brandIntro = job.introPath && existsSync(job.introPath) ? job.introPath : null;
 const brandOutro = job.outroPath && existsSync(job.outroPath) ? job.outroPath : null;
 
-if (job.branding === false) {
+if (polished) {
+  // ===== POLISHED style: centre-frame Remotion explainer =====
+  console.log('[5/6] rendering polished explainer (Remotion)…');
+  const REMO = process.env.REMOTION_DIR || join(HERE, 'remotion');
+  const runDir = join(REMO, 'public', 'run'), brandDir = join(REMO, 'public', 'brand');
+  mkdirSync(runDir, { recursive: true }); mkdirSync(brandDir, { recursive: true });
+  copyFileSync(zoom, join(runDir, 'body.mp4'));
+  copyFileSync(vo, join(runDir, 'vo.wav'));
+  copyFileSync(existsSync(P('focus.json')) ? P('focus.json') : (writeFileSync(P('focus.json'), '[]'), P('focus.json')), join(runDir, 'focus.json'));
+  // captions -> length-weighted word track (highlight follows the voice)
+  const caps = JSON.parse(readFileSync(capsFile, 'utf8'));
+  const words = [];
+  for (const c of caps) {
+    const toks = String(c.text || '').trim().split(/\s+/).filter(Boolean);
+    if (!toks.length) continue;
+    const wt = toks.map(w => w.length + 1), tot = wt.reduce((a, b) => a + b, 0);
+    let t = c.start; const span = c.end - c.start;
+    toks.forEach((w, i) => { const d = span * wt[i] / tot; words.push({ text: w, startMs: Math.round(t * 1000), endMs: Math.round((t + d) * 1000) }); t += d; });
+  }
+  writeFileSync(join(runDir, 'words.json'), JSON.stringify(words));
+  // brand cards + logo (per-brand; fall back to bundled Go Legal AI assets)
+  if (job.introPath && existsSync(job.introPath)) copyFileSync(job.introPath, join(brandDir, 'intro.mp4'));
+  if (job.outroPath && existsSync(job.outroPath)) copyFileSync(job.outroPath, join(brandDir, 'outro.mp4'));
+  if (job.logoPath && existsSync(job.logoPath)) copyFileSync(job.logoPath, join(brandDir, 'logo.png'));
+  const props = {
+    videoSrc: 'run/body.mp4', voSrc: 'run/vo.wav', wordsSrc: 'run/words.json', focusSrc: 'run/focus.json',
+    logoSrc: 'brand/logo.png',
+    introVideoSrc: existsSync(join(brandDir, 'intro.mp4')) ? 'brand/intro.mp4' : undefined,
+    outroVideoSrc: existsSync(join(brandDir, 'outro.mp4')) ? 'brand/outro.mp4' : undefined,
+    tagline: plan.tagline || 'Ask, draft & review legal docs in minutes',
+    cta: 'Try Go Legal AI Free', accent: job.accent || '#6C5CE7', accent2: '#B98CFF',
+    introSeconds: 3.0, outroSeconds: 3.0,
+  };
+  const bin = join(REMO, 'node_modules', '.bin', 'remotion');
+  sh(bin, ['render', 'src/index.tsx', 'GoLegalDemo', final, `--props=${JSON.stringify(props)}`, '--log=error'], { cwd: REMO });
+} else if (job.branding === false) {
   // per-video option: no intro/outro screens — just the (VO + optional captions) body
   console.log('[5/6] assembling (no intro/outro)…');
   bfEnv.NO_BRANDING = '1';

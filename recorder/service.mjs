@@ -69,6 +69,7 @@ async function handle(v) {
   if (pr.motion === false) job.motion = false;         // no zoom/movement — static full frame
   if (pr.branding === false) job.branding = false;     // no intro/outro screens
   if (pr.subtitles === false) job.subtitles = false;   // no burned-in captions
+  if (pr.explainerStyle) job.style = pr.explainerStyle;  // 'polished' = centre-frame Remotion style
 
   // URL recording with a login: pull creds (service-role table) so the recorder
   // can sign in and drive the real app instead of filming a static signup screen
